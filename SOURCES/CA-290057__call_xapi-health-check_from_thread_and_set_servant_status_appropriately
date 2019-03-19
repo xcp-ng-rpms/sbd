@@ -1,0 +1,208 @@
+CA-290057: call xapi-health-check from thread and set servant status appropriately
+
+From: Mark Syms <mark.syms@citrix.com>
+
+Signed-off-by: Mark Syms <mark.syms@citrix.com>
+
+diff --git a/src/sbd-inquisitor.c b/src/sbd-inquisitor.c
+index d0632e2..0e7ef9f 100644
+--- a/src/sbd-inquisitor.c
++++ b/src/sbd-inquisitor.c
+@@ -395,7 +395,7 @@ int cluster_alive(bool all)
+     }
+ 
+     for (s = servants_leader; s; s = s->next) {
+-        if (sbd_is_cluster(s) || sbd_is_pcmk(s)) {
++        if (sbd_is_cluster(s) || sbd_is_pcmk(s) || sbd_is_xapi(s)) {
+             if(s->outdated) {
+                 alive = 0;
+             } else if(all == false) {
+@@ -509,7 +509,7 @@ void inquisitor_child(void)
+ 			}
+ 		} else if (sig == SIG_PCMK_UNHEALTHY) {
+ 			s = lookup_servant_by_pid(sinfo.si_pid);
+-			if (sbd_is_cluster(s) || sbd_is_pcmk(s)) {
++			if (sbd_is_cluster(s) || sbd_is_pcmk(s) || sbd_is_xapi(s)) {
+                 if (s->outdated == 0) {
+                     cl_log(LOG_WARNING, "%s health check: UNHEALTHY", s->devname);
+                 }
+@@ -915,8 +915,8 @@ int main(int argc, char **argv, char **envp)
+ 		case 'v':
+                     debug++;
+                     if(debug == 1) {
+-                        qb_log_filter_ctl(QB_LOG_SYSLOG, QB_LOG_FILTER_ADD, QB_LOG_FILTER_FILE, "sbd-common.c,sbd-inquisitor.c,sbd-md.c,sbd-pacemaker.c", LOG_DEBUG);
+-                        qb_log_filter_ctl(QB_LOG_STDERR, QB_LOG_FILTER_ADD, QB_LOG_FILTER_FILE, "sbd-common.c,sbd-inquisitor.c,sbd-md.c,sbd-pacemaker.c", LOG_DEBUG);
++                        qb_log_filter_ctl(QB_LOG_SYSLOG, QB_LOG_FILTER_ADD, QB_LOG_FILTER_FILE, "sbd-common.c,sbd-inquisitor.c,sbd-md.c,sbd-pacemaker.c,sbd-cluster.c,sbd-xapi.c", LOG_DEBUG);
++                        qb_log_filter_ctl(QB_LOG_STDERR, QB_LOG_FILTER_ADD, QB_LOG_FILTER_FILE, "sbd-common.c,sbd-inquisitor.c,sbd-md.c,sbd-pacemaker.c,sbd-cluster.c,sbd-xapi.c", LOG_DEBUG);
+ 			cl_log(LOG_INFO, "Verbose mode enabled.");
+ 
+                     } else if(debug == 2) {
+diff --git a/src/sbd-xapi.c b/src/sbd-xapi.c
+index 4998afb..6cee57e 100644
+--- a/src/sbd-xapi.c
++++ b/src/sbd-xapi.c
+@@ -20,54 +20,146 @@
+  * SBD monitor for xapi health
+  */
+ 
++#include <unistd.h>
+ #include <glib-unix.h>
+ 
+-
+ #include "sbd.h"
+ 
+ 
+-static GMainLoop *mainloop = NULL;
+-static guint notify_timer = 0;
++#define XAPI_HEALTHCHECKER_PATH "/opt/xensource/libexec/"
++#define XAPI_HEALTHCHECKER      "xapi-health-check"
++#define HA_ENABLE_PATH		"/var/run/cluster/"
++#define HA_ENABLE_FILE		"ha_enabled"
++
++static GMainLoop	*mainloop     = NULL;
++static guint		 notify_timer = 0;
++static guint		 health_timer = 0;
++static guint             health_blocked_timer = 100;
++
++int		timeout_health	    	 = 60;
++int             health_execution_timeout = 100;
++
++static GPid       checker_pid = 0;
++
++
++static void
++checker_watch_cb (GPid     pid,
++		  gint     status,
++		  gpointer user_data)
++{
++	cl_log(LOG_INFO, "Checker process watch cb");
++
++	if (g_spawn_check_exit_status(status, NULL)) {
++		set_servant_health(pcmk_health_online, LOG_INFO, "Node state: xapi healthy");
++	} else {
++		set_servant_health(pcmk_health_transient, LOG_INFO, "Node state: xapi health check failed");
++	}
++
++	g_spawn_close_pid (pid);
++	checker_pid = 0;
++}
++
++static gboolean
++health_timer_abort_cb(gpointer data)
++{
++	if (checker_pid != 0) {
++		cl_log(LOG_DEBUG, "Checker process timed out killing");
++		kill(checker_pid, SIGKILL);
++	}
+ 
++	return FALSE;
++}
++
++static gboolean
++health_timer_cb(gpointer data)
++{
++	const gchar * const argv[] = {XAPI_HEALTHCHECKER_PATH XAPI_HEALTHCHECKER, NULL };
++	GError *error = NULL;
++	guint watch_source;
++
++	cl_log(LOG_DEBUG, "Health timer cb");
++
++	if (access(HA_ENABLE_PATH HA_ENABLE_FILE, F_OK) != -1) {
++		if (checker_pid == 0) {
++			cl_log(LOG_DEBUG, "Starting checker subprocess");
++			g_spawn_async(
++				NULL,
++				(gchar **)argv,
++				NULL,
++				G_SPAWN_DO_NOT_REAP_CHILD | G_SPAWN_STDOUT_TO_DEV_NULL | G_SPAWN_STDERR_TO_DEV_NULL,
++				NULL,
++				NULL,
++				&checker_pid,
++				&error);
++
++			if (error != NULL) {
++				cl_log(LOG_ERR, "Failed to spawn health check %d", error->code);
++				set_servant_health(pcmk_health_transient, LOG_INFO, "Node state: xapi health check failed");
++				g_error_free(error);
++				return FALSE;
++			}
++
++			watch_source = g_child_watch_add (checker_pid, checker_watch_cb, NULL);
++			health_blocked_timer = g_timeout_add(health_execution_timeout * 1000, health_timer_abort_cb, NULL);
++		}
++	} else {
++		set_servant_health(pcmk_health_online, LOG_INFO, "Node state: xapi healthy");
++		checker_pid = 0;
++	}
++
++	return TRUE;
++}
+ 
+ static gboolean
+ notify_timer_cb(gpointer data)
+ {
+-    set_servant_health(pcmk_health_online, LOG_INFO, "Node state: online");
++	cl_log(LOG_DEBUG, "Refreshing state");
++
++	if (access(HA_ENABLE_PATH HA_ENABLE_FILE, F_OK) == -1) {
++		set_servant_health(pcmk_health_online, LOG_INFO, "Node state: xapi healthy");
++	}
+ 
+-    notify_parent();
++	notify_parent();
+ 
+-    return TRUE;
++	return TRUE;
+ }
+ 
+ static void
+ clean_up(int rc)
+ {
+-    return;
++	return;
+ }
+ 
+ static void
+ xapi_shutdown(int nsig)
+ {
+-    clean_up(0);
++	clean_up(0);
+ }
+ 
+ int
+ servant_xapi(const char *diskname, int mode, const void* argp)
+ {
+-    cl_log(LOG_INFO, "Monitoring xapi health");
++	sigset_t procmask;
++
++	cl_log(LOG_INFO, "Monitoring xapi health");
++
++	set_proc_title("sbd: watcher: Xapi");
+ 
+-    set_proc_title("sbd: watcher: Xapi");
++	/* As we use subprocess unblock SIGCHILD */
++	sigemptyset(&procmask);
++	sigaddset(&procmask, SIGCHLD);
++	sigprocmask(SIG_UNBLOCK, &procmask, NULL);
+ 
+-    mainloop = g_main_new(FALSE);
+-    notify_timer = g_timeout_add(timeout_loop * 1000, notify_timer_cb, NULL);
++	mainloop = g_main_loop_new(NULL, FALSE);
++	notify_timer = g_timeout_add_seconds(timeout_loop, notify_timer_cb, NULL);
++	health_timer = g_timeout_add_seconds(timeout_health, health_timer_cb, NULL);
+ 
+-    mainloop_add_signal(SIGTERM, xapi_shutdown);
+-    mainloop_add_signal(SIGINT, xapi_shutdown);
++	mainloop_add_signal(SIGTERM, xapi_shutdown);
++	mainloop_add_signal(SIGINT, xapi_shutdown);
+ 
+-    g_main_run(mainloop);
+-    g_main_destroy(mainloop);
++	g_main_loop_run(mainloop);
++	g_main_loop_unref(mainloop);
+ 
+-    clean_up(0);
+-    return 0;                   /* never reached */
++	clean_up(0);
++	return 0;                   /* never reached */
+ }

@@ -1,0 +1,251 @@
+CA-292257: log some messages at higher priority.
+
+From: Mark Syms <mark.syms@citrix.com>
+
+Allow the timeout for the health checker to be passed in as an
+argument. Set default checker timout to match what Xapi configures
+XenHA with (120 instead of 100 seconds).
+
+Refactor some code to make it cleaner.
+
+Also fix a possible race in the checker abort timeout, make sure
+it's stopped when the process actually manages to terminate.
+
+Signed-off-by: Mark Syms <mark.syms@citrix.com>
+
+diff --git a/src/sbd-inquisitor.c b/src/sbd-inquisitor.c
+index 0e7ef9f..2c572bf 100644
+--- a/src/sbd-inquisitor.c
++++ b/src/sbd-inquisitor.c
+@@ -26,6 +26,7 @@ int     disk_priority = 1;
+ int	check_pcmk = 0;
+ int	check_cluster = 0;
+ int     check_xapi = 0;
++int     xapi_health_timeout = 0;
+ int	disk_count	= 0;
+ int	servant_count	= 0;
+ int	servant_restart_interval = 5;
+@@ -138,6 +139,8 @@ void servant_start(struct servants_list_item *s)
+ 	int r = 0;
+ 	union sigval svalue;
+ 
++	struct xapi_servant_params *xapi_params;
++
+ 	if (s->pid != 0) {
+ 		r = sigqueue(s->pid, 0, svalue);
+ 		if ((r != -1 || errno != ESRCH))
+@@ -162,7 +165,9 @@ void servant_start(struct servants_list_item *s)
+ 
+         } else if (sbd_is_xapi(s)) {
+ 		DBGLOG(LOG_INFO, "Starting Xapi servant");
+-		s->pid = assign_servant(s->devname, servant_xapi, start_mode, NULL);
++		xapi_params = malloc(sizeof(struct xapi_servant_params));
++		xapi_params->health_check_timeout = xapi_health_timeout;
++		s->pid = assign_servant(s->devname, servant_xapi, start_mode, xapi_params);
+ 
+         } else {
+             cl_log(LOG_ERR, "Unrecognized servant: %s", s->devname);
+@@ -892,7 +897,7 @@ int main(int argc, char **argv, char **envp)
+         }
+         cl_log(LOG_DEBUG, "Start delay: %d (%s)", (int)start_delay, value?value:"default");
+ 
+-	while ((c = getopt(argc, argv, "czC:DPRTWZhvxw:d:n:p:1:2:3:4:5:t:I:F:S:s:")) != -1) {
++	while ((c = getopt(argc, argv, "czC:DPRTWZhvxX:w:d:n:p:1:2:3:4:5:t:I:F:S:s:")) != -1) {
+ 		switch (c) {
+ 		case 'D':
+ 			break;
+@@ -956,6 +961,9 @@ int main(int argc, char **argv, char **envp)
+ 		case 'x':
+ 			check_xapi = 1;
+ 			break;
++		case 'X':
++			xapi_health_timeout = atoi(optarg);
++			break;
+ 		case 'z':
+ 			disk_priority = 0;
+ 			break;
+diff --git a/src/sbd-xapi.c b/src/sbd-xapi.c
+index b2a4652..0f65a24 100644
+--- a/src/sbd-xapi.c
++++ b/src/sbd-xapi.c
+@@ -38,10 +38,11 @@
+ static GMainLoop	*mainloop     = NULL;
+ static guint		 notify_timer = 0;
+ static guint		 health_timer = 0;
+-static guint             health_blocked_timer = 100;
++static guint             health_blocked_timer = 0;
++static struct xapi_servant_params *params;
+ 
+-int		timeout_health	    	 = 60;
+-int             health_execution_timeout = 100;
++#define		HEALTH_CHECK_PERIOD   	60
++#define         DEFAULT_HEALTH_TIMEOUT  120
+ 
+ static GPid       checker_pid = 0;
+ 
+@@ -49,15 +50,59 @@ static GPid       checker_pid = 0;
+ static void
+ checker_watch_cb (GPid     pid,
+ 		  gint     status,
++		  gpointer user_data);
++static gboolean
++health_timer_abort_cb(gpointer data);
++
++static gboolean
++start_health_checker()
++{
++	const gchar * const argv[] = {XAPI_HEALTHCHECKER_PATH XAPI_HEALTHCHECKER, NULL };
++	GError *error = NULL;
++
++	cl_log(LOG_DEBUG, "Starting checker subprocess, task timeout %d", params->health_check_timeout);
++	g_spawn_async(
++		NULL,
++		(gchar **)argv,
++		NULL,
++		G_SPAWN_DO_NOT_REAP_CHILD | G_SPAWN_STDOUT_TO_DEV_NULL | G_SPAWN_STDERR_TO_DEV_NULL,
++		NULL,
++		NULL,
++		&checker_pid,
++		&error);
++
++	if (error != NULL) {
++		cl_log(LOG_ERR, "Failed to spawn health check %d", error->code);
++		set_servant_health(pcmk_health_transient, LOG_INFO, "Node state: xapi health check failed");
++		g_error_free(error);
++		return FALSE;
++	}
++
++	g_child_watch_add(checker_pid, checker_watch_cb, NULL);
++	health_blocked_timer = g_timeout_add(params->health_check_timeout * 1000, health_timer_abort_cb, NULL);
++
++	return TRUE;
++}
++
++static void
++checker_watch_cb (GPid     pid,
++		  gint     status,
+ 		  gpointer user_data)
+ {
++	GError *error;
+ 	cl_log(LOG_INFO, "Checker process watch cb");
+ 
+-	if (g_spawn_check_exit_status(status, NULL)) {
++	// Remove the abort timer as the process has terminated
++	g_source_destroy(g_main_context_find_source_by_id(NULL, health_blocked_timer));
++
++	if (g_spawn_check_exit_status(status, &error)) {
+ 		set_servant_health(pcmk_health_online, LOG_INFO, "Node state: xapi healthy");
+ 	} else {
+-		cl_log(LOG_ERR, "Xapi health check failed, %d", status);
++		cl_log(LOG_ERR, "Xapi health check %s, %d",
++		       error->domain == G_SPAWN_EXIT_ERROR ? "failed" : "signalled",
++		       status);
+ 		set_servant_health(pcmk_health_transient, LOG_ERR, "Node state: xapi health check failed");
++		g_error_free(error);
+ 	}
+ 
+ 	g_spawn_close_pid (pid);
+@@ -68,7 +113,7 @@ static gboolean
+ health_timer_abort_cb(gpointer data)
+ {
+ 	if (checker_pid != 0) {
+-		cl_log(LOG_DEBUG, "Checker process timed out killing");
++		cl_log(LOG_CRIT, "Checker process timed out killing");
+ 		kill(checker_pid, SIGKILL);
+ 	}
+ 
+@@ -78,40 +123,20 @@ health_timer_abort_cb(gpointer data)
+ static gboolean
+ health_timer_cb(gpointer data)
+ {
+-	const gchar * const argv[] = {XAPI_HEALTHCHECKER_PATH XAPI_HEALTHCHECKER, NULL };
+-	GError *error = NULL;
++	gboolean result = TRUE;
+ 
+ 	cl_log(LOG_DEBUG, "Health timer cb");
+ 
+ 	if (access(HA_ENABLE_PATH HA_ENABLE_FILE, F_OK) != -1) {
+ 		if (checker_pid == 0) {
+-			cl_log(LOG_DEBUG, "Starting checker subprocess");
+-			g_spawn_async(
+-				NULL,
+-				(gchar **)argv,
+-				NULL,
+-				G_SPAWN_DO_NOT_REAP_CHILD | G_SPAWN_STDOUT_TO_DEV_NULL | G_SPAWN_STDERR_TO_DEV_NULL,
+-				NULL,
+-				NULL,
+-				&checker_pid,
+-				&error);
+-
+-			if (error != NULL) {
+-				cl_log(LOG_ERR, "Failed to spawn health check %d", error->code);
+-				set_servant_health(pcmk_health_transient, LOG_INFO, "Node state: xapi health check failed");
+-				g_error_free(error);
+-				return FALSE;
+-			}
+-
+-			g_child_watch_add (checker_pid, checker_watch_cb, NULL);
+-			health_blocked_timer = g_timeout_add(health_execution_timeout * 1000, health_timer_abort_cb, NULL);
++			result = start_health_checker();
+ 		}
+ 	} else {
+ 		set_servant_health(pcmk_health_online, LOG_INFO, "Node state: xapi healthy");
+ 		checker_pid = 0;
+ 	}
+ 
+-	return TRUE;
++	return result;
+ }
+ 
+ static gboolean
+@@ -145,10 +170,18 @@ servant_xapi(const char *diskname, int mode, const void* argp)
+ {
+ 	sigset_t procmask;
+ 
++	params = (struct xapi_servant_params*)argp;
++
+ 	cl_log(LOG_INFO, "Monitoring xapi health");
++	cl_log(LOG_INFO, "Monitoring xapi health, checker timeout %d",
++	       params->health_check_timeout);
+ 
+ 	set_proc_title("sbd: watcher: Xapi");
+ 
++	if (params->health_check_timeout == 0) {
++		params->health_check_timeout = DEFAULT_HEALTH_TIMEOUT;
++	}
++
+ 	/* As we use subprocess unblock SIGCHILD */
+ 	sigemptyset(&procmask);
+ 	sigaddset(&procmask, SIGCHLD);
+@@ -156,11 +189,14 @@ servant_xapi(const char *diskname, int mode, const void* argp)
+ 
+ 	mainloop = g_main_loop_new(NULL, FALSE);
+ 	notify_timer = g_timeout_add_seconds(timeout_loop, notify_timer_cb, NULL);
+-	health_timer = g_timeout_add_seconds(timeout_health, health_timer_cb, NULL);
++	health_timer = g_timeout_add_seconds(HEALTH_CHECK_PERIOD, health_timer_cb, NULL);
+ 
+ 	mainloop_add_signal(SIGTERM, xapi_shutdown);
+ 	mainloop_add_signal(SIGINT, xapi_shutdown);
+ 
++	/* Start in healthy state */
++	set_servant_health(pcmk_health_online, LOG_INFO, "Node state: xapi healthy");
++
+ 	g_main_loop_run(mainloop);
+ 	g_main_loop_unref(mainloop);
+ 
+diff --git a/src/sbd.h b/src/sbd.h
+index 1635ca5..4cc9fca 100644
+--- a/src/sbd.h
++++ b/src/sbd.h
+@@ -108,6 +108,11 @@ struct sbd_context {
+ 	struct iocb	io;
+ };
+ 
++struct xapi_servant_params
++{
++	int     health_check_timeout;
++};
++
+ enum pcmk_health 
+ {
+     pcmk_health_unknown,

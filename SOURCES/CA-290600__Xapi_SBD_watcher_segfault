@@ -1,0 +1,44 @@
+CA-290600: Xapi SBD watcher segfault.
+
+Must initialise GError to NULL otherwise g_set_error doesn't fill
+it in and then we get a free error.
+
+From: Mark Syms <mark.syms@citrix.com>
+
+Signed-off-by: Mark Syms <mark.syms@citrix.com>
+
+diff --git a/src/sbd-xapi.c b/src/sbd-xapi.c
+index 0f65a24..afbd0b8 100644
+--- a/src/sbd-xapi.c
++++ b/src/sbd-xapi.c
+@@ -89,7 +89,7 @@ checker_watch_cb (GPid     pid,
+ 		  gint     status,
+ 		  gpointer user_data)
+ {
+-	GError *error;
++	GError *error = NULL;
+ 	cl_log(LOG_INFO, "Checker process watch cb");
+ 
+ 	// Remove the abort timer as the process has terminated
+@@ -98,10 +98,9 @@ checker_watch_cb (GPid     pid,
+ 	if (g_spawn_check_exit_status(status, &error)) {
+ 		set_servant_health(pcmk_health_online, LOG_INFO, "Node state: xapi healthy");
+ 	} else {
+-		cl_log(LOG_ERR, "Xapi health check %s, %d",
+-		       error->domain == G_SPAWN_EXIT_ERROR ? "failed" : "signalled",
+-		       status);
++		cl_log(LOG_ERR, "Xapi health check '%s', %d", error->message, status);
+ 		set_servant_health(pcmk_health_transient, LOG_ERR, "Node state: xapi health check failed");
++		notify_parent();
+ 		g_error_free(error);
+ 	}
+ 
+@@ -200,6 +199,8 @@ servant_xapi(const char *diskname, int mode, const void* argp)
+ 	g_main_loop_run(mainloop);
+ 	g_main_loop_unref(mainloop);
+ 
++	cl_log(LOG_CRIT, "Unexpected termination of Xapi servant main loop");
++
+ 	clean_up(0);
+ 	return 0;                   /* never reached */
+ }

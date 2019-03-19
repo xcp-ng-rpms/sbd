@@ -1,0 +1,47 @@
+CA-290057: fix compilation warnings
+
+From: Mark Syms <mark.syms@citrix.com>
+
+Signed-off-by: Mark Syms <mark.syms@citrix.com>
+
+diff --git a/src/sbd-xapi.c b/src/sbd-xapi.c
+index 6cee57e..c21dd0f 100644
+--- a/src/sbd-xapi.c
++++ b/src/sbd-xapi.c
+@@ -21,6 +21,10 @@
+  */
+ 
+ #include <unistd.h>
++
++#include <crm/cluster.h>
++#include <crm/common/mainloop.h>
++
+ #include <glib-unix.h>
+ 
+ #include "sbd.h"
+@@ -75,7 +79,6 @@ health_timer_cb(gpointer data)
+ {
+ 	const gchar * const argv[] = {XAPI_HEALTHCHECKER_PATH XAPI_HEALTHCHECKER, NULL };
+ 	GError *error = NULL;
+-	guint watch_source;
+ 
+ 	cl_log(LOG_DEBUG, "Health timer cb");
+ 
+@@ -99,7 +102,7 @@ health_timer_cb(gpointer data)
+ 				return FALSE;
+ 			}
+ 
+-			watch_source = g_child_watch_add (checker_pid, checker_watch_cb, NULL);
++			g_child_watch_add (checker_pid, checker_watch_cb, NULL);
+ 			health_blocked_timer = g_timeout_add(health_execution_timeout * 1000, health_timer_abort_cb, NULL);
+ 		}
+ 	} else {
+diff --git a/src/sbd.h b/src/sbd.h
+index 9c62ea0..1635ca5 100644
+--- a/src/sbd.h
++++ b/src/sbd.h
+@@ -200,3 +200,4 @@ void set_servant_health(enum pcmk_health state, int level, char const *format, .
+ bool sbd_is_disk(struct servants_list_item *servant);
+ bool sbd_is_pcmk(struct servants_list_item *servant);
+ bool sbd_is_cluster(struct servants_list_item *servant);
++bool sbd_is_xapi(struct servants_list_item *servant);

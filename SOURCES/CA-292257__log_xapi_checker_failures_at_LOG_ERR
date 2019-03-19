@@ -1,0 +1,20 @@
+CA-292257: log xapi checker failures at LOG_ERR
+
+From: Mark Syms <mark.syms@citrix.com>
+
+Signed-off-by: Mark Syms <mark.syms@citrix.com>
+
+diff --git a/src/sbd-xapi.c b/src/sbd-xapi.c
+index c21dd0f..b2a4652 100644
+--- a/src/sbd-xapi.c
++++ b/src/sbd-xapi.c
+@@ -56,7 +56,8 @@ checker_watch_cb (GPid     pid,
+ 	if (g_spawn_check_exit_status(status, NULL)) {
+ 		set_servant_health(pcmk_health_online, LOG_INFO, "Node state: xapi healthy");
+ 	} else {
+-		set_servant_health(pcmk_health_transient, LOG_INFO, "Node state: xapi health check failed");
++		cl_log(LOG_ERR, "Xapi health check failed, %d", status);
++		set_servant_health(pcmk_health_transient, LOG_ERR, "Node state: xapi health check failed");
+ 	}
+ 
+ 	g_spawn_close_pid (pid);

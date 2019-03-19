@@ -1,0 +1,192 @@
+CA-290057: barebones Xapi sbd servant
+
+From: Mark Syms <mark.syms@citrix.com>
+
+Signed-off-by: Mark Syms <mark.syms@citrix.com>
+
+diff --git a/src/Makefile.am b/src/Makefile.am
+index 4d509c2..35c19a5 100644
+--- a/src/Makefile.am
++++ b/src/Makefile.am
+@@ -5,7 +5,7 @@ AM_CPPFLAGS =  -I$(includedir)/pacemaker  \
+ 
+ sbin_PROGRAMS = sbd
+ 
+-sbd_SOURCES = sbd-common.c sbd-inquisitor.c sbd-pacemaker.c sbd-cluster.c setproctitle.c
++sbd_SOURCES = sbd-common.c sbd-inquisitor.c sbd-pacemaker.c sbd-cluster.c sbd-xapi.c setproctitle.c
+ 
+ if SUPPORT_SHARED_DISK
+ sbd_SOURCES += sbd-md.c
+diff --git a/src/sbd-common.c b/src/sbd-common.c
+index 964f422..72e4d82 100644
+--- a/src/sbd-common.c
++++ b/src/sbd-common.c
+@@ -727,3 +727,15 @@ sbd_is_pcmk(struct servants_list_item *servant)
+     }
+     return false;
+ }
++
++bool
++sbd_is_xapi(struct servants_list_item *servant)
++{
++    if ((servant != NULL) &&
++        (servant->devname != NULL) &&
++        (strcmp("xapi", servant->devname) == 0)) {
++        return true;
++    }
++    return false;
++}
++
+diff --git a/src/sbd-inquisitor.c b/src/sbd-inquisitor.c
+index d0dacef..d0632e2 100644
+--- a/src/sbd-inquisitor.c
++++ b/src/sbd-inquisitor.c
+@@ -25,6 +25,7 @@ static struct servants_list_item *servants_leader = NULL;
+ int     disk_priority = 1;
+ int	check_pcmk = 0;
+ int	check_cluster = 0;
++int     check_xapi = 0;
+ int	disk_count	= 0;
+ int	servant_count	= 0;
+ int	servant_restart_interval = 5;
+@@ -159,6 +160,10 @@ void servant_start(struct servants_list_item *s)
+ 		DBGLOG(LOG_INFO, "Starting Cluster servant");
+ 		s->pid = assign_servant(s->devname, servant_cluster, start_mode, NULL);
+ 
++        } else if (sbd_is_xapi(s)) {
++		DBGLOG(LOG_INFO, "Starting Xapi servant");
++		s->pid = assign_servant(s->devname, servant_xapi, start_mode, NULL);
++
+         } else {
+             cl_log(LOG_ERR, "Unrecognized servant: %s", s->devname);
+         }        
+@@ -887,7 +892,7 @@ int main(int argc, char **argv, char **envp)
+         }
+         cl_log(LOG_DEBUG, "Start delay: %d (%s)", (int)start_delay, value?value:"default");
+ 
+-	while ((c = getopt(argc, argv, "czC:DPRTWZhvw:d:n:p:1:2:3:4:5:t:I:F:S:s:")) != -1) {
++	while ((c = getopt(argc, argv, "czC:DPRTWZhvxw:d:n:p:1:2:3:4:5:t:I:F:S:s:")) != -1) {
+ 		switch (c) {
+ 		case 'D':
+ 			break;
+@@ -948,6 +953,9 @@ int main(int argc, char **argv, char **envp)
+ 		case 'P':
+ 			check_pcmk = 1;
+ 			break;
++		case 'x':
++			check_xapi = 1;
++			break;
+ 		case 'z':
+ 			disk_priority = 0;
+ 			break;
+@@ -1003,6 +1011,7 @@ int main(int argc, char **argv, char **envp)
+ 			usage();
+ 			return (0);
+ 		default:
++			cl_log(LOG_ERR, "Unhandled option %c", c);
+ 			exit_status = -2;
+ 			goto out;
+ 			break;
+@@ -1103,6 +1112,11 @@ int main(int argc, char **argv, char **envp)
+                         recruit_servant("cluster", 0);
+                 }
+ 
++		cl_log(LOG_INFO, "Turning on Xapi checks: %d", check_xapi);
++		if (check_xapi) {
++			recruit_servant("xapi", 0);
++		}
++
+                 exit_status = inquisitor();
+         }
+         
+diff --git a/src/sbd-xapi.c b/src/sbd-xapi.c
+new file mode 100644
+index 0000000..4998afb
+--- /dev/null
++++ b/src/sbd-xapi.c
+@@ -0,0 +1,73 @@
++/*
++ * Copyright (C) Citrix Systems Inc.
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public
++ * License as published by the Free Software Foundation; either
++ * version 2 of the License, or (at your option) any later version.
++ *
++ * This software is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License along
++ * with this program; if not, write to the Free Software Foundation, Inc.,
++ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
++ */
++
++/*
++ * SBD monitor for xapi health
++ */
++
++#include <glib-unix.h>
++
++
++#include "sbd.h"
++
++
++static GMainLoop *mainloop = NULL;
++static guint notify_timer = 0;
++
++
++static gboolean
++notify_timer_cb(gpointer data)
++{
++    set_servant_health(pcmk_health_online, LOG_INFO, "Node state: online");
++
++    notify_parent();
++
++    return TRUE;
++}
++
++static void
++clean_up(int rc)
++{
++    return;
++}
++
++static void
++xapi_shutdown(int nsig)
++{
++    clean_up(0);
++}
++
++int
++servant_xapi(const char *diskname, int mode, const void* argp)
++{
++    cl_log(LOG_INFO, "Monitoring xapi health");
++
++    set_proc_title("sbd: watcher: Xapi");
++
++    mainloop = g_main_new(FALSE);
++    notify_timer = g_timeout_add(timeout_loop * 1000, notify_timer_cb, NULL);
++
++    mainloop_add_signal(SIGTERM, xapi_shutdown);
++    mainloop_add_signal(SIGINT, xapi_shutdown);
++
++    g_main_run(mainloop);
++    g_main_destroy(mainloop);
++
++    clean_up(0);
++    return 0;                   /* never reached */
++}
+diff --git a/src/sbd.h b/src/sbd.h
+index aa411b7..9c62ea0 100644
+--- a/src/sbd.h
++++ b/src/sbd.h
+@@ -175,6 +175,7 @@ int servant(const char *diskname, int mode, const void* argp);
+ 
+ int servant_pcmk(const char *diskname, int mode, const void* argp);
+ int servant_cluster(const char *diskname, int mode, const void* argp);
++int servant_xapi(const char *diskname, int mode, const void* argp);
+ 
+ struct servants_list_item *lookup_servant_by_dev(const char *devname);
+ struct servants_list_item *lookup_servant_by_pid(pid_t pid);

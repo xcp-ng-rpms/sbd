@@ -25,11 +25,11 @@ Summary:        Storage-based death
 License:        GPLv2+
 Group:          System Environment/Daemons
 Version:        1.3.0
-Release:        6.xs+1.0.0
+Release:        6.xs+1.4.0
 Url:            https://github.com/%{github_owner}/%{name}
 #Source0:        https://github.com/%{github_owner}/%{name}/archive/%{commit}/%{name}-%{commit}.tar.gz
 Source0:         https://code.citrite.net/rest/archive/latest/projects/XSU/repos/%{name}/archive?at=%{commit}&format=tar.gz&prefix=%{name}-%{commit}#/%{name}-%{commit}.tar.gz
-Provides: gitsha(https://code.citrite.net/rest/archive/latest/projects/XS/repos/sbd.pg/archive?at=1.0.0&format=tar) = 0697b802cd174778a2693ccee415a014c5f67c7e
+Provides: gitsha(https://code.citrite.net/rest/archive/latest/projects/XS/repos/sbd.pg/archive?at=1.4.0&format=tar) = 94587b81a40002d502e687f8850e1d60577087fb
 Patch0:         01-Fix-sbd-inquisitor-Correctly-look-up-servant-by-devi.patch
 Patch1:         02-Fix-sbd-inquisitor-Do-not-create-duplicate-servants.patch
 Patch2:         03-Fix-cluster-servant-check-for-corosync-2Node-mode.patch
@@ -37,6 +37,12 @@ Patch3:         04-Refactor-servant-type-helpers.patch
 Patch4:         05-Fix-disk-servant-signal-reset-request-via-exit-code.patch
 Patch5: 0001-sbd-cluster-only-report-good-health-if-quorate-or-no.patch
 Patch6: 0002-increase_logging_level_to_CRIT_for_quorum_loss.patch
+Patch7: CA-290057__barebones_Xapi_sbd_servant
+Patch8: CA-290057__call_xapi-health-check_from_thread_and_set_servant_status_appropriately
+Patch9: CA-290057__fix_compilation_warnings
+Patch10: CA-292257__log_xapi_checker_failures_at_LOG_ERR
+Patch11: CA-292257__sbd_xapi_servant_outdated
+Patch12: CA-290600__Xapi_SBD_watcher_segfault
 BuildRoot:      %{_tmppath}/%{name}-%{version}-build
 BuildRequires:  autoconf
 BuildRequires:  automake
@@ -128,6 +134,19 @@ rm -rf %{buildroot}
 %doc COPYING
 
 %changelog
+* Tue Jul 10 2018 Mark Syms <mark.syms@citrix.com> - 1.3.0-6.xs+1.4.0
+- CA-290600: Xapi SBD watcher segfault
+
+* Thu Jul  5 2018 Mark Syms <mark.syms@citrix.com> - 1.3.0-6.xs+1.3.0
+- CA-292257: fix up possible race condition,
+   code refactoring, error improvements
+
+* Wed Jun 20 2018 Mark Syms <mark.syms@citrix.com> - 1.3.0-6.xs+1.2.0
+- CA-292257: increase log severity
+
+* Mon Jun  4 2018 Mark Syms <mark.syms@citrix.com> - 1.3.0-6.xs+1.1.0
+- Add Xapi health check monitoring
+
 * Thu Mar 15 2018 Edwin Török <edvin.torok@citrix.com> - 1.3.0-6.xs+1.0.0
 - Use versioned xenserver-corosync Provides
 - Depend on our repatched version of packages
