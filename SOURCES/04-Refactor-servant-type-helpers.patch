@@ -1,0 +1,149 @@
+From d1222864f4fcca63c7426272b0cdd22bdaa60b9e Mon Sep 17 00:00:00 2001
+From: Klaus Wenninger <klaus.wenninger@aon.at>
+Date: Tue, 6 Jun 2017 09:38:07 +0200
+Subject: [PATCH] Refactor servant type helpers
+
+---
+ src/sbd-common.c     | 33 +++++++++++++++++++++++++++++++++
+ src/sbd-inquisitor.c | 35 +++++++++++------------------------
+ src/sbd-md.c         |  2 +-
+ src/sbd.h            |  2 ++
+ 4 files changed, 47 insertions(+), 25 deletions(-)
+
+diff --git a/src/sbd-common.c b/src/sbd-common.c
+index 55e636b..964f422 100644
+--- a/src/sbd-common.c
++++ b/src/sbd-common.c
+@@ -694,3 +694,36 @@ set_servant_health(enum pcmk_health state, int level, char const *format, ...)
+         free(string);
+     }
+ }
++
++bool
++sbd_is_disk(struct servants_list_item *servant)
++{
++    if ((servant != NULL) &&
++        (servant->devname != NULL) &&
++        (servant->devname[0] == '/')) {
++        return true;
++    }
++    return false;
++}
++
++bool
++sbd_is_cluster(struct servants_list_item *servant)
++{
++    if ((servant != NULL) &&
++        (servant->devname != NULL) &&
++        (strcmp("cluster", servant->devname) == 0)) {
++        return true;
++    }
++    return false;
++}
++
++bool
++sbd_is_pcmk(struct servants_list_item *servant)
++{
++    if ((servant != NULL) &&
++        (servant->devname != NULL) &&
++        (strcmp("pcmk", servant->devname) == 0)) {
++        return true;
++    }
++    return false;
++}
+diff --git a/src/sbd-inquisitor.c b/src/sbd-inquisitor.c
+index 3c3a5a0..5a1f639 100644
+--- a/src/sbd-inquisitor.c
++++ b/src/sbd-inquisitor.c
+@@ -34,17 +34,6 @@ char*	pidfile = NULL;
+ 
+ int parse_device_line(const char *line);
+ 
+-bool
+-sbd_is_disk(struct servants_list_item *servant) 
+-{
+-    if (servant == NULL
+-        || servant->devname == NULL
+-        || servant->devname[0] == '/') {
+-        return true;
+-    }
+-    return false;
+-}
+-
+ void recruit_servant(const char *devname, pid_t pid)
+ {
+ 	struct servants_list_item *s = servants_leader;
+@@ -162,11 +151,11 @@ void servant_start(struct servants_list_item *s)
+                 cl_log(LOG_ERR, "Shared disk functionality not supported");
+                 return;
+ #endif
+-	} else if(strcmp("pcmk", s->devname) == 0) {
++	} else if(sbd_is_pcmk(s)) {
+ 		DBGLOG(LOG_INFO, "Starting Pacemaker servant");
+ 		s->pid = assign_servant(s->devname, servant_pcmk, start_mode, NULL);
+ 
+-	} else if(strcmp("cluster", s->devname) == 0) {
++	} else if(sbd_is_cluster(s)) {
+ 		DBGLOG(LOG_INFO, "Starting Cluster servant");
+ 		s->pid = assign_servant(s->devname, servant_cluster, start_mode, NULL);
+ 
+@@ -401,7 +390,7 @@ int cluster_alive(bool all)
+     }
+ 
+     for (s = servants_leader; s; s = s->next) {
+-        if (sbd_is_disk(s) == false) {
++        if (sbd_is_cluster(s) || sbd_is_pcmk(s)) {
+             if(s->outdated) {
+                 alive = 0;
+             } else if(all == false) {
+@@ -490,16 +479,14 @@ void inquisitor_child(void)
+ 			}
+ 		} else if (sig == SIG_PCMK_UNHEALTHY) {
+ 			s = lookup_servant_by_pid(sinfo.si_pid);
+-			if (sbd_is_disk(s)) {
+-				cl_log(LOG_WARNING, "Ignoring SIG_PCMK_UNHEALTHY from unknown source");
+-
+-                        } else {
+-                            if(s->outdated == 0) {
+-                                cl_log(LOG_WARNING, "%s health check: UNHEALTHY", s->devname);
+-                            }
+-                            s->t_last.tv_sec = 1;
+-			}
+-
++			if (sbd_is_cluster(s) || sbd_is_pcmk(s)) {
++                if (s->outdated == 0) {
++                    cl_log(LOG_WARNING, "%s health check: UNHEALTHY", s->devname);
++                }
++                s->t_last.tv_sec = 1;
++            } else {
++                cl_log(LOG_WARNING, "Ignoring SIG_PCMK_UNHEALTHY from unknown source");
++            }
+ 		} else if (sig == SIG_IO_FAIL) {
+ 			s = lookup_servant_by_pid(sinfo.si_pid);
+ 			if (s) {
+diff --git a/src/sbd-md.c b/src/sbd-md.c
+index 10b1925..bbf9018 100644
+--- a/src/sbd-md.c
++++ b/src/sbd-md.c
+@@ -833,7 +833,7 @@ int ping_via_slots(const char *name, struct servants_list_item *servants)
+ 					break;
+ 				} else {
+ 					s = lookup_servant_by_pid(pid);
+-					if (s && sbd_is_disk(s)) {
++					if (sbd_is_disk(s)) {
+ 						servants_finished++;
+ 					}
+ 				}
+diff --git a/src/sbd.h b/src/sbd.h
+index 07a476d..07d2706 100644
+--- a/src/sbd.h
++++ b/src/sbd.h
+@@ -191,3 +191,5 @@ extern int servant_health;
+ void set_servant_health(enum pcmk_health state, int level, char const *format, ...) __attribute__ ((__format__ (__printf__, 3, 4)));
+ 
+ bool sbd_is_disk(struct servants_list_item *servant);
++bool sbd_is_pcmk(struct servants_list_item *servant);
++bool sbd_is_cluster(struct servants_list_item *servant);
+-- 
+1.8.3.1
+

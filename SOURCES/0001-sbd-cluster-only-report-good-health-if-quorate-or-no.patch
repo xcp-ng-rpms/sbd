@@ -1,0 +1,134 @@
+From d0976706682d405481a6925b9db0382ec4919e79 Mon Sep 17 00:00:00 2001
+From: Jonathan Davies <jonathan.davies@citrix.com>
+Date: Fri, 15 Sep 2017 16:03:38 +0000
+Subject: [PATCH] sbd-cluster: only report good health if quorate or not had
+ quorum
+
+Signed-off-by: Jonathan Davies <jonathan.davies@citrix.com>
+diff --git a/configure.ac b/configure.ac
+index d8968da..1b258b8 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -58,6 +58,7 @@ AC_CHECK_LIB(aio, io_setup, , missing="yes")
+ AC_CHECK_LIB(qb, qb_ipcs_connection_auth_set, , missing="yes")
+ AC_CHECK_LIB(cib, cib_new, , missing="yes")
+ AC_CHECK_LIB(crmcommon, set_crm_log_level, , missing="yes")
++AC_CHECK_LIB(quorum, quorum_initialize, , missing="yes")
+ AC_CHECK_LIB(pe_status, pe_find_node, , missing="yes")
+ AC_CHECK_LIB(pe_rules, test_rule, , missing="yes")
+ AC_CHECK_LIB(crmcluster, crm_peer_init, , missing="yes")
+diff --git a/src/sbd-cluster.c b/src/sbd-cluster.c
+index 656f068..d82d0b2 100644
+--- a/src/sbd-cluster.c
++++ b/src/sbd-cluster.c
+@@ -35,6 +35,10 @@
+ 
+ #include <glib-unix.h>
+ 
++#if SUPPORT_COROSYNC
++#include <corosync/quorum.h>
++#endif
++
+ #include "sbd.h"
+ 
+ //undef SUPPORT_PLUGIN
+@@ -216,9 +220,18 @@ out:
+ }
+ #endif
+ 
++#if SUPPORT_COROSYNC
++static quorum_handle_t q_handle;
++static uint32_t q_type;
++#endif
++
+ static gboolean
+ notify_timer_cb(gpointer data)
+ {
++    int is_quorate;
++    int err;
++    static int ever_had_quorum = FALSE;
++
+     cl_log(LOG_DEBUG, "Refreshing %sstate", remote_node?"remote ":"");
+ 
+     if(remote_node) {
+@@ -233,7 +246,20 @@ notify_timer_cb(gpointer data)
+ 
+         case pcmk_cluster_corosync:
+         case pcmk_cluster_cman:
+-            /* TODO - Make a CPG call and only call notify_parent() when we get a reply */
++#if SUPPORT_COROSYNC
++            /* Report healthy if we're quorate or we've never seen quorum */
++            err = quorum_getquorate(q_handle, &is_quorate);
++            if (err != CS_OK) {
++                set_servant_health(pcmk_health_transient, LOG_INFO, "Unable to dispatch quorum status: %d", err);
++            } else if (is_quorate) {
++                set_servant_health(pcmk_health_online, LOG_INFO, "Node state: online");
++                ever_had_quorum = TRUE;
++            } else if (ever_had_quorum) {
++                set_servant_health(pcmk_health_noquorum, LOG_WARNING, "Quorum lost");
++            } else {
++                set_servant_health(pcmk_health_online, LOG_INFO, "We do not have quorum yet");
++            }
++#endif
+             notify_parent();
+             break;
+ 
+@@ -248,6 +274,7 @@ static void
+ sbd_membership_connect(void)
+ {
+     bool connected = false;
++    int err;
+ 
+     cl_log(LOG_NOTICE, "Attempting cluster connection");
+ 
+@@ -259,6 +286,7 @@ sbd_membership_connect(void)
+ 
+ #if SUPPORT_COROSYNC
+     cluster.cpg.cpg_confchg_fn = sbd_cpg_membership_dispatch;
++    q_handle = 0;
+ #endif
+ 
+     while(connected == false) {
+@@ -283,6 +311,18 @@ sbd_membership_connect(void)
+                 }
+ 
+ #if SUPPORT_COROSYNC
++                /* Connect to quorum service so we can use q_handle */
++                cl_log(LOG_INFO, "Attempting quorum connection");
++                err = quorum_initialize(&q_handle, NULL, &q_type);
++                if (err != CS_OK) {
++                    cl_log(LOG_ERR, "Cannot initialize QUORUM service: %d\n", err);
++                    q_handle = 0;
++                    crm_cluster_disconnect(&cluster);
++                    connected = false;
++                }
++#endif
++
++#if SUPPORT_COROSYNC
+             }
+ #endif
+         }
+@@ -302,11 +342,23 @@ sbd_membership_connect(void)
+ static void
+ sbd_membership_destroy(gpointer user_data)
+ {
++    int err;
++
+     cl_log(LOG_WARNING, "Lost connection to %s", name_for_cluster_type(get_cluster_type()));
+ 
+     set_servant_health(pcmk_health_unclean, LOG_ERR, "Cluster connection terminated");
+     notify_parent();
+ 
++#if SUPPORT_COROSYNC
++    /* Best effort attempt to disconnect from quorum service */
++    cl_log(LOG_INFO, "Attempting quorum disconnection");
++    err = quorum_finalize(q_handle);
++    if (err != CS_OK) {
++        cl_log(LOG_ERR, "Cannot finalize QUORUM service: %d\n", err);
++        q_handle = 0;
++    }
++#endif
++
+     /* Attempt to reconnect, the watchdog will take the node down if the problem isn't transient */
+     sbd_membership_connect();
+ }

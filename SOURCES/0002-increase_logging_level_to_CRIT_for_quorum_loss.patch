@@ -1,0 +1,32 @@
+CP-26038: Increase logging level to CRIT for quorum loss
+
+From: Mark Syms <mark.syms@citrix.com>
+
+Signed-off-by: Mark Syms <mark.syms@citrix.com>
+
+diff --git a/src/sbd-cluster.c b/src/sbd-cluster.c
+index f040973..82d2a2d 100644
+--- a/src/sbd-cluster.c
++++ b/src/sbd-cluster.c
+@@ -250,7 +250,7 @@ notify_timer_cb(gpointer data)
+                 set_servant_health(pcmk_health_online, LOG_INFO, "Node state: online");
+                 ever_had_quorum = TRUE;
+             } else if (ever_had_quorum) {
+-                set_servant_health(pcmk_health_noquorum, LOG_WARNING, "Quorum lost");
++                set_servant_health(pcmk_health_noquorum, LOG_CRIT, "Quorum lost");
+             } else {
+                 set_servant_health(pcmk_health_online, LOG_INFO, "We do not have quorum yet");
+             }
+diff --git a/src/sbd-inquisitor.c b/src/sbd-inquisitor.c
+index 8a994a0..d0dacef 100644
+--- a/src/sbd-inquisitor.c
++++ b/src/sbd-inquisitor.c
+@@ -663,7 +663,7 @@ void inquisitor_child(void)
+ 		}
+ 
+ 		if (timeout_watchdog_warn && (latency > (int)timeout_watchdog_warn)) {
+-			cl_log(LOG_WARNING,
++			cl_log(LOG_CRIT,
+ 			       "Latency: No liveness for %d s exceeds threshold of %d s (healthy servants: %d)",
+ 			       (int)latency, (int)timeout_watchdog_warn, good_servants);
+ 

@@ -1,0 +1,243 @@
+From b39f25de0d7d6eed8757ce1076125c8b32854c8d Mon Sep 17 00:00:00 2001
+From: Klaus Wenninger <klaus.wenninger@aon.at>
+Date: Wed, 7 Jun 2017 06:14:23 +0200
+Subject: [PATCH] Fix: cluster-servant: check for corosync 2Node mode
+
+---
+ configure.ac      |   7 ++-
+ src/sbd-cluster.c | 155 +++++++++++++++++++++++++++++++++++++++++++++++++++---
+ 2 files changed, 153 insertions(+), 9 deletions(-)
+
+diff --git a/configure.ac b/configure.ac
+index a7e3e70..5be16fe 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -32,6 +32,8 @@ AM_PROG_CC_C_O
+ PKG_CHECK_MODULES(glib, [glib-2.0])
+ dnl PKG_CHECK_MODULES(libcoroipcc, [libcoroipcc])
+ 
++PKG_CHECK_MODULES(cmap, [libcmap], HAVE_cmap=1, HAVE_cmap=0)
++
+ dnl pacemaker > 1.1.8
+ PKG_CHECK_MODULES(pacemaker, [pacemaker, pacemaker-cib], HAVE_pacemaker=1, HAVE_pacemaker=0)
+ 
+@@ -42,8 +44,10 @@ PKG_CHECK_MODULES(libqb, [libqb])
+ CPPFLAGS="$CPPFLAGS -Werror"
+ if test $HAVE_pacemaker = 0 -a $HAVE_pcmk = 0; then
+     AC_MSG_ERROR(No package 'pacemaker' found)
++elif test $HAVE_cmap = 0; then
++    AC_MSG_ERROR(No package 'cmap' found)
+ elif test $HAVE_pacemaker = 1; then
+-    CPPFLAGS="$CPPFLAGS $glib_CFLAGS $pacemaker_CFLAGS"
++    CPPFLAGS="$CPPFLAGS $glib_CFLAGS $pacemaker_CFLAGS $cmap_CFLAGS"
+ fi
+ 
+ PKG_CHECK_MODULES(libxml, [libxml-2.0])
+@@ -58,6 +62,7 @@ AC_CHECK_LIB(pe_status, pe_find_node, , missing="yes")
+ AC_CHECK_LIB(pe_rules, test_rule, , missing="yes")
+ AC_CHECK_LIB(crmcluster, crm_peer_init, , missing="yes")
+ AC_CHECK_LIB(uuid, uuid_unparse, , missing="yes")
++AC_CHECK_LIB(cmap, cmap_initialize, , missing="yes")
+ 
+ dnl pacemaker >= 1.1.8
+ AC_CHECK_HEADERS(pacemaker/crm/cluster.h)
+diff --git a/src/sbd-cluster.c b/src/sbd-cluster.c
+index 0ed56e7..656f068 100644
+--- a/src/sbd-cluster.c
++++ b/src/sbd-cluster.c
+@@ -33,6 +33,8 @@
+ #include <crm/cluster.h>
+ #include <crm/common/mainloop.h>
+ 
++#include <glib-unix.h>
++
+ #include "sbd.h"
+ 
+ //undef SUPPORT_PLUGIN
+@@ -48,6 +50,7 @@ static gboolean sbd_remote_check(gpointer user_data);
+ static long unsigned int find_pacemaker_remote(void);
+ static void sbd_membership_destroy(gpointer user_data);
+ 
++
+ #if SUPPORT_PLUGIN
+ static void
+ sbd_plugin_membership_dispatch(cpg_handle_t handle,
+@@ -67,6 +70,48 @@ sbd_plugin_membership_dispatch(cpg_handle_t handle,
+ #endif
+ 
+ #if SUPPORT_COROSYNC
++#include <corosync/cmap.h>
++
++static bool two_node = false;
++static bool ever_seen_both = false;
++static cmap_handle_t cmap_handle = 0;
++static cmap_track_handle_t track_handle = 0;
++static int cpg_membership_entries = -1;
++static GSource *cmap_source = NULL;
++
++void
++sbd_cpg_membership_health_update()
++{
++    if(cpg_membership_entries > 0) {
++        if (!two_node || !ever_seen_both || cpg_membership_entries > 1) {
++            set_servant_health(pcmk_health_online, LOG_INFO,
++                           "Connected to %s (%u members)",
++                           name_for_cluster_type(get_cluster_type()),
++                           cpg_membership_entries
++                          );
++        } else {
++            /* Alternative would be asking votequorum for number of votes.
++             * Using pacemaker's cpg as source for number of active nodes
++             * avoids binding to an additional library, is definitely
++             * less code to write and we wouldn't have to combina data
++             * from 3 sources (cmap, cpq & votequorum) in a potentially
++             * racy environment.
++             */
++            set_servant_health(pcmk_health_noquorum, LOG_WARNING,
++                           "Connected to %s but requires both nodes present",
++                           name_for_cluster_type(get_cluster_type())
++                          );
++        }
++
++        if (cpg_membership_entries > 1) {
++            ever_seen_both = true;
++        }
++    } else {
++        set_servant_health(pcmk_health_unclean, LOG_WARNING,
++                           "Empty %s membership", name_for_cluster_type(get_cluster_type()));
++    }
++}
++
+ void
+ sbd_cpg_membership_dispatch(cpg_handle_t handle,
+                     const struct cpg_name *groupName,
+@@ -74,14 +119,100 @@ sbd_cpg_membership_dispatch(cpg_handle_t handle,
+                     const struct cpg_address *left_list, size_t left_list_entries,
+                     const struct cpg_address *joined_list, size_t joined_list_entries)
+ {
+-    if(member_list_entries > 0) {
+-        set_servant_health(pcmk_health_online, LOG_INFO,
+-                           "Connected to %s", name_for_cluster_type(get_cluster_type()));
++    cpg_membership_entries = member_list_entries;
++    sbd_cpg_membership_health_update();
++    notify_parent();
++}
++
++static void sbd_cmap_notify_fn(
++    cmap_handle_t cmap_handle,
++    cmap_track_handle_t cmap_track_handle,
++    int32_t event,
++    const char *key_name,
++    struct cmap_notify_value new_val,
++    struct cmap_notify_value old_val,
++    void *user_data)
++{
++    if (new_val.type == CMAP_VALUETYPE_UINT8) {
++        switch (event) {
++            case CMAP_TRACK_ADD:
++            case CMAP_TRACK_MODIFY:
++                two_node = *((uint8_t *) new_val.data);
++                break;
++            case CMAP_TRACK_DELETE:
++                two_node = false;
++                break;
++            default:
++                return;
++        }
++        sbd_cpg_membership_health_update();
++        notify_parent();
++    }
++}
++
++static gboolean
++cmap_dispatch_callback (gpointer user_data)
++{
++    cmap_dispatch(cmap_handle, CS_DISPATCH_ALL);
++    return TRUE;
++}
++
++static gboolean
++sbd_get_two_node(void)
++{
++    uint8_t two_node_u8 = 0;
++    int cmap_fd;
++
++    if (!track_handle) {
++        if (cmap_initialize(&cmap_handle) != CS_OK) {
++            cl_log(LOG_WARNING, "Cannot initialize CMAP service\n");
++            goto out;
++        }
++
++        if (cmap_track_add(cmap_handle, "quorum.two_node",
++                            CMAP_TRACK_DELETE|CMAP_TRACK_MODIFY|CMAP_TRACK_ADD,
++                            sbd_cmap_notify_fn, NULL, &track_handle) != CS_OK) {
++            cl_log(LOG_WARNING, "Failed adding CMAP tracker for 2Node-mode\n");
++            goto out;
++        }
++
++        /* add the tracker to mainloop */
++        if (cmap_fd_get(cmap_handle, &cmap_fd) != CS_OK) {
++            cl_log(LOG_WARNING, "Failed to get a file handle for cmap\n");
++            goto out;
++        }
++ 
++        if (!(cmap_source = g_unix_fd_source_new (cmap_fd, G_IO_IN))) {
++            cl_log(LOG_WARNING, "Couldn't create source for cmap\n");
++            goto out;
++        }
++        g_source_set_callback(cmap_source, cmap_dispatch_callback, NULL, NULL);
++        g_source_attach(cmap_source, NULL);
++    }
++
++    if (cmap_get_uint8(cmap_handle, "quorum.two_node", &two_node_u8) == CS_OK) {
++        cl_log(LOG_NOTICE, "Corosync is%s in 2Node-mode", two_node_u8?"":" not");
++        two_node = two_node_u8;
+     } else {
+-        set_servant_health(pcmk_health_unclean, LOG_WARNING,
+-                           "Empty %s membership", name_for_cluster_type(get_cluster_type()));
++        cl_log(LOG_NOTICE, "quorum.two_node present in cmap\n");
+     }
+-    notify_parent();
++    return TRUE;
++
++out:
++    if (cmap_source) {
++        g_source_destroy(cmap_source);
++        cmap_source = NULL;
++    }
++    if (track_handle) {
++        cmap_track_delete(cmap_handle, track_handle);
++        track_handle = 0;
++    }
++    if (cmap_handle) {
++        cmap_finalize(cmap_handle);
++        cmap_handle = 0;
++    }
++
++    return FALSE;
+ }
+ #endif
+ 
+@@ -143,9 +274,17 @@ sbd_membership_connect(void)
+         } else {
+             cl_log(LOG_INFO, "Attempting connection to %s", name_for_cluster_type(stack));
+ 
+-            if(crm_cluster_connect(&cluster)) {
+-                connected = true;
++#if SUPPORT_COROSYNC
++            if (sbd_get_two_node()) {
++#endif
++
++                if(crm_cluster_connect(&cluster)) {
++                    connected = true;
++                }
++
++#if SUPPORT_COROSYNC
+             }
++#endif
+         }
+ 
+         if(connected == false) {
+-- 
+1.8.3.1
+
