@@ -25,7 +25,7 @@ Summary:        Storage-based death
 License:        GPLv2+
 Group:          System Environment/Daemons
 Version:        1.3.0
-Release:        6.xs+1.4.0
+Release:        6.xs+1.4.0%{dist}
 Url:            https://github.com/%{github_owner}/%{name}
 #Source0:        https://github.com/%{github_owner}/%{name}/archive/%{commit}/%{name}-%{commit}.tar.gz
 Source0:         https://code.citrite.net/rest/archive/latest/projects/XSU/repos/%{name}/archive?at=%{commit}&format=tar.gz&prefix=%{name}-%{commit}#/%{name}-%{commit}.tar.gz
