@@ -1,8 +1,18 @@
-CA-290057: barebones Xapi sbd servant
-
+From 8f09fe89f452ace696b97019fb59a60db69b5965 Mon Sep 17 00:00:00 2001
 From: Mark Syms <mark.syms@citrix.com>
+Date: Thu, 11 Oct 2018 12:17:53 +0800
+Subject: [PATCH] CA-290057: barebones Xapi sbd servant
 
 Signed-off-by: Mark Syms <mark.syms@citrix.com>
+Signed-off-by: Liang Dai <liang.dai1@citrix.com>
+---
+ src/Makefile.am      |  2 +-
+ src/sbd-common.c     | 12 ++++++++
+ src/sbd-inquisitor.c | 16 +++++++++-
+ src/sbd-xapi.c       | 73 ++++++++++++++++++++++++++++++++++++++++++++
+ src/sbd.h            |  1 +
+ 5 files changed, 102 insertions(+), 2 deletions(-)
+ create mode 100644 src/sbd-xapi.c
 
 diff --git a/src/Makefile.am b/src/Makefile.am
 index 4d509c2..35c19a5 100644
@@ -18,10 +28,10 @@ index 4d509c2..35c19a5 100644
  if SUPPORT_SHARED_DISK
  sbd_SOURCES += sbd-md.c
 diff --git a/src/sbd-common.c b/src/sbd-common.c
-index 964f422..72e4d82 100644
+index 803bc3a..15154d0 100644
 --- a/src/sbd-common.c
 +++ b/src/sbd-common.c
-@@ -727,3 +727,15 @@ sbd_is_pcmk(struct servants_list_item *servant)
+@@ -966,3 +966,15 @@ sbd_is_pcmk(struct servants_list_item *servant)
      }
      return false;
  }
@@ -38,7 +48,7 @@ index 964f422..72e4d82 100644
 +}
 +
 diff --git a/src/sbd-inquisitor.c b/src/sbd-inquisitor.c
-index d0dacef..d0632e2 100644
+index 1955892..9de48ee 100644
 --- a/src/sbd-inquisitor.c
 +++ b/src/sbd-inquisitor.c
 @@ -25,6 +25,7 @@ static struct servants_list_item *servants_leader = NULL;
@@ -60,7 +70,7 @@ index d0dacef..d0632e2 100644
          } else {
              cl_log(LOG_ERR, "Unrecognized servant: %s", s->devname);
          }        
-@@ -887,7 +892,7 @@ int main(int argc, char **argv, char **envp)
+@@ -903,7 +908,7 @@ int main(int argc, char **argv, char **envp)
          }
          cl_log(LOG_DEBUG, "Start delay: %d (%s)", (int)start_delay, value?value:"default");
  
@@ -69,9 +79,9 @@ index d0dacef..d0632e2 100644
  		switch (c) {
  		case 'D':
  			break;
-@@ -948,6 +953,9 @@ int main(int argc, char **argv, char **envp)
+@@ -965,6 +970,9 @@ int main(int argc, char **argv, char **envp)
  		case 'P':
- 			check_pcmk = 1;
+ 			P_count++;
  			break;
 +		case 'x':
 +			check_xapi = 1;
@@ -79,7 +89,7 @@ index d0dacef..d0632e2 100644
  		case 'z':
  			disk_priority = 0;
  			break;
-@@ -1003,6 +1011,7 @@ int main(int argc, char **argv, char **envp)
+@@ -1020,6 +1028,7 @@ int main(int argc, char **argv, char **envp)
  			usage();
  			return (0);
  		default:
@@ -87,7 +97,7 @@ index d0dacef..d0632e2 100644
  			exit_status = -2;
  			goto out;
  			break;
-@@ -1103,6 +1112,11 @@ int main(int argc, char **argv, char **envp)
+@@ -1132,6 +1141,11 @@ int main(int argc, char **argv, char **envp)
                          recruit_servant("cluster", 0);
                  }
  
@@ -179,10 +189,10 @@ index 0000000..4998afb
 +    return 0;                   /* never reached */
 +}
 diff --git a/src/sbd.h b/src/sbd.h
-index aa411b7..9c62ea0 100644
+index 0f8847a..315a0bf 100644
 --- a/src/sbd.h
 +++ b/src/sbd.h
-@@ -175,6 +175,7 @@ int servant(const char *diskname, int mode, const void* argp);
+@@ -177,6 +177,7 @@ int servant(const char *diskname, int mode, const void* argp);
  
  int servant_pcmk(const char *diskname, int mode, const void* argp);
  int servant_cluster(const char *diskname, int mode, const void* argp);
@@ -190,3 +200,6 @@ index aa411b7..9c62ea0 100644
  
  struct servants_list_item *lookup_servant_by_dev(const char *devname);
  struct servants_list_item *lookup_servant_by_pid(pid_t pid);
+-- 
+2.17.1
+
