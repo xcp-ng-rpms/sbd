@@ -1,0 +1,29 @@
+From 4ec7359c0581c9cc252ff7b63f4383b5e1eb17e9 Mon Sep 17 00:00:00 2001
+From: Liang Dai <liang.dai1@citrix.com>
+Date: Thu, 11 Oct 2018 11:03:34 +0800
+Subject: [PATCH] Tweak sbd-inquisitor.c to retain the same behaviour as we had
+ in Lima
+
+Signed-off-by: Liang Dai <liang.dai1@citrix.com>
+---
+ src/sbd-inquisitor.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/src/sbd-inquisitor.c b/src/sbd-inquisitor.c
+index 59408b3..06131ae 100644
+--- a/src/sbd-inquisitor.c
++++ b/src/sbd-inquisitor.c
+@@ -23,8 +23,8 @@
+ static struct servants_list_item *servants_leader = NULL;
+ 
+ int     disk_priority = 1;
+-int	check_pcmk = 1;
+-int	check_cluster = 1;
++int	check_pcmk = 0;
++int	check_cluster = 0;
+ int	disk_count	= 0;
+ int	servant_count	= 0;
+ int	servant_restart_interval = 5;
+-- 
+2.17.1
+

@@ -1,15 +1,21 @@
-From d0976706682d405481a6925b9db0382ec4919e79 Mon Sep 17 00:00:00 2001
+From 2b790cfaca376a845f513a6cb94432b1679a4c2e Mon Sep 17 00:00:00 2001
 From: Jonathan Davies <jonathan.davies@citrix.com>
 Date: Fri, 15 Sep 2017 16:03:38 +0000
 Subject: [PATCH] sbd-cluster: only report good health if quorate or not had
  quorum
 
 Signed-off-by: Jonathan Davies <jonathan.davies@citrix.com>
+Signed-off-by: Liang Dai <liang.dai1@citrix.com>
+---
+ configure.ac      |  1 +
+ src/sbd-cluster.c | 51 ++++++++++++++++++++++++++++++++++++++++++++++-
+ 2 files changed, 51 insertions(+), 1 deletion(-)
+
 diff --git a/configure.ac b/configure.ac
-index d8968da..1b258b8 100644
+index 1eb8758..aa014ad 100644
 --- a/configure.ac
 +++ b/configure.ac
-@@ -58,6 +58,7 @@ AC_CHECK_LIB(aio, io_setup, , missing="yes")
+@@ -61,6 +61,7 @@ AC_CHECK_LIB(aio, io_setup, , missing="yes")
  AC_CHECK_LIB(qb, qb_ipcs_connection_auth_set, , missing="yes")
  AC_CHECK_LIB(cib, cib_new, , missing="yes")
  AC_CHECK_LIB(crmcommon, set_crm_log_level, , missing="yes")
@@ -18,12 +24,12 @@ index d8968da..1b258b8 100644
  AC_CHECK_LIB(pe_rules, test_rule, , missing="yes")
  AC_CHECK_LIB(crmcluster, crm_peer_init, , missing="yes")
 diff --git a/src/sbd-cluster.c b/src/sbd-cluster.c
-index 656f068..d82d0b2 100644
+index de99d0c..8834e9b 100644
 --- a/src/sbd-cluster.c
 +++ b/src/sbd-cluster.c
-@@ -35,6 +35,10 @@
- 
+@@ -37,6 +37,10 @@
  #include <glib-unix.h>
+ #endif
  
 +#if SUPPORT_COROSYNC
 +#include <corosync/quorum.h>
@@ -32,8 +38,8 @@ index 656f068..d82d0b2 100644
  #include "sbd.h"
  
  //undef SUPPORT_PLUGIN
-@@ -216,9 +220,18 @@ out:
- }
+@@ -227,9 +231,18 @@ out:
+ #endif
  #endif
  
 +#if SUPPORT_COROSYNC
@@ -51,7 +57,7 @@ index 656f068..d82d0b2 100644
      cl_log(LOG_DEBUG, "Refreshing %sstate", remote_node?"remote ":"");
  
      if(remote_node) {
-@@ -233,7 +246,20 @@ notify_timer_cb(gpointer data)
+@@ -244,7 +257,20 @@ notify_timer_cb(gpointer data)
  
          case pcmk_cluster_corosync:
          case pcmk_cluster_cman:
@@ -73,7 +79,7 @@ index 656f068..d82d0b2 100644
              notify_parent();
              break;
  
-@@ -248,6 +274,7 @@ static void
+@@ -259,6 +285,7 @@ static void
  sbd_membership_connect(void)
  {
      bool connected = false;
@@ -81,7 +87,7 @@ index 656f068..d82d0b2 100644
  
      cl_log(LOG_NOTICE, "Attempting cluster connection");
  
-@@ -259,6 +286,7 @@ sbd_membership_connect(void)
+@@ -270,6 +297,7 @@ sbd_membership_connect(void)
  
  #if SUPPORT_COROSYNC
      cluster.cpg.cpg_confchg_fn = sbd_cpg_membership_dispatch;
@@ -89,10 +95,10 @@ index 656f068..d82d0b2 100644
  #endif
  
      while(connected == false) {
-@@ -283,6 +311,18 @@ sbd_membership_connect(void)
+@@ -294,6 +322,15 @@ sbd_membership_connect(void)
                  }
  
- #if SUPPORT_COROSYNC
+ #if SUPPORT_COROSYNC && CHECK_TWO_NODE
 +                /* Connect to quorum service so we can use q_handle */
 +                cl_log(LOG_INFO, "Attempting quorum connection");
 +                err = quorum_initialize(&q_handle, NULL, &q_type);
@@ -102,13 +108,10 @@ index 656f068..d82d0b2 100644
 +                    crm_cluster_disconnect(&cluster);
 +                    connected = false;
 +                }
-+#endif
-+
-+#if SUPPORT_COROSYNC
              }
  #endif
          }
-@@ -302,11 +342,23 @@ sbd_membership_connect(void)
+@@ -313,11 +350,23 @@ sbd_membership_connect(void)
  static void
  sbd_membership_destroy(gpointer user_data)
  {
@@ -132,3 +135,6 @@ index 656f068..d82d0b2 100644
      /* Attempt to reconnect, the watchdog will take the node down if the problem isn't transient */
      sbd_membership_connect();
  }
+-- 
+2.17.1
+

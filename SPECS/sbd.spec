@@ -15,34 +15,39 @@
 
 # Please submit bugfixes or comments via http://bugs.opensuse.org/
 #
-%global commit 4968e9c8602fbb990bed63cc96ca18f62e2181db
+%global commit a74b4d25a3eb93fe1abbe6e3ebfd2b16cf48873f
 %global shortcommit %(c=%{commit}; echo ${c:0:7})
 %global github_owner Clusterlabs
-%global buildnum 4
+%global buildnum 7
 
 Name:           sbd
 Summary:        Storage-based death
 License:        GPLv2+
 Group:          System Environment/Daemons
-Version:        1.3.0
-Release:        6.xs+1.4.0%{dist}
+Version:        1.3.1
+Release:        7.xs+2.0.0%{?dist}
 Url:            https://github.com/%{github_owner}/%{name}
 #Source0:        https://github.com/%{github_owner}/%{name}/archive/%{commit}/%{name}-%{commit}.tar.gz
-Source0:         https://code.citrite.net/rest/archive/latest/projects/XSU/repos/%{name}/archive?at=%{commit}&format=tar.gz&prefix=%{name}-%{commit}#/%{name}-%{commit}.tar.gz
-Provides: gitsha(https://code.citrite.net/rest/archive/latest/projects/XS/repos/sbd.pg/archive?at=1.4.0&format=tar) = 94587b81a40002d502e687f8850e1d60577087fb
-Patch0:         01-Fix-sbd-inquisitor-Correctly-look-up-servant-by-devi.patch
-Patch1:         02-Fix-sbd-inquisitor-Do-not-create-duplicate-servants.patch
-Patch2:         03-Fix-cluster-servant-check-for-corosync-2Node-mode.patch
-Patch3:         04-Refactor-servant-type-helpers.patch
-Patch4:         05-Fix-disk-servant-signal-reset-request-via-exit-code.patch
-Patch5: 0001-sbd-cluster-only-report-good-health-if-quorate-or-no.patch
-Patch6: 0002-increase_logging_level_to_CRIT_for_quorum_loss.patch
-Patch7: CA-290057__barebones_Xapi_sbd_servant
-Patch8: CA-290057__call_xapi-health-check_from_thread_and_set_servant_status_appropriately
-Patch9: CA-290057__fix_compilation_warnings
-Patch10: CA-292257__log_xapi_checker_failures_at_LOG_ERR
-Patch11: CA-292257__sbd_xapi_servant_outdated
-Patch12: CA-290600__Xapi_SBD_watcher_segfault
+
+Source0: https://code.citrite.net/rest/archive/latest/projects/XSU/repos/sbd/archive?at=a74b4d25a3eb93fe1abbe6e3ebfd2b16cf48873f&format=tar.gz&prefix=sbd-a74b4d25a3eb93fe1abbe6e3ebfd2b16cf48873f#/sbd-a74b4d25a3eb93fe1abbe6e3ebfd2b16cf48873f.tar.gz
+Patch0: SOURCES/sbd/0001-make-pacemaker-dlm-wait-for-sbd-start.patch
+Patch1: SOURCES/sbd/0002-mention-timeout-caveat-with-SBD_DELAY_START.patch
+Patch2: SOURCES/sbd/0003-Doc-sbd.8.pod-add-query-test-watchdog.patch
+
+Patch3: 0001-Tweak-sbd-inquisitor.c-to-retain-the-same-behaviour-.patch
+Patch4: 0001-sbd-cluster-only-report-good-health-if-quorate-or-no.patch
+Patch5: 0002-increase_logging_level_to_CRIT_for_quorum_loss.patch
+Patch6: CA-290057__barebones_Xapi_sbd_servant
+Patch7: CA-290057__call_xapi-health-check_from_thread_and_set_servant_status_appropriately
+Patch8: CA-290057__fix_compilation_warnings
+Patch9: CA-292257__log_xapi_checker_failures_at_LOG_ERR
+Patch10: CA-292257__sbd_xapi_servant_outdated
+Patch11: CA-290600__Xapi_SBD_watcher_segfault
+
+Provides: gitsha(https://code.citrite.net/rest/archive/latest/projects/XSU/repos/sbd.centos/archive?at=imports%2Fc7%2Fsbd-1.3.1-7.el7&format=tar.gz#/sbd-1.3.1.centos.tar.gz) = e38fd2356724512cb5a98add1fb973d86615de6e
+Provides: gitsha(https://code.citrite.net/rest/archive/latest/projects/XSU/repos/sbd/archive?at=a74b4d25a3eb93fe1abbe6e3ebfd2b16cf48873f&format=tar.gz&prefix=sbd-a74b4d25a3eb93fe1abbe6e3ebfd2b16cf48873f#/sbd-a74b4d25a3eb93fe1abbe6e3ebfd2b16cf48873f.tar.gz) = a74b4d25a3eb93fe1abbe6e3ebfd2b16cf48873f
+Provides: gitsha(https://code.citrite.net/rest/archive/latest/projects/XS/repos/sbd.pg/archive?at=2.0.0&format=tar#/sbd-2.0.0.pg.tar) = 6a6f4c579419a7c28c8b6e5bf5f7ad1f5960f3a5
+
 BuildRoot:      %{_tmppath}/%{name}-%{version}-build
 BuildRequires:  autoconf
 BuildRequires:  automake
@@ -110,6 +115,16 @@ rm -rf %{buildroot}
 %post
 %systemd_post sbd.service
 %systemd_post sbd_remote.service
+if [ $1 -ne 1 ] ; then
+	if systemctl --quiet is-enabled sbd.service 2>/dev/null
+	then
+		systemctl --quiet reenable sbd.service 2>/dev/null || :
+	fi
+	if systemctl --quiet is-enabled sbd_remote.service 2>/dev/null
+	then
+		systemctl --quiet reenable sbd_remote.service 2>/dev/null || :
+	fi
+fi
 
 %preun
 %systemd_preun sbd.service
@@ -134,28 +149,44 @@ rm -rf %{buildroot}
 %doc COPYING
 
 %changelog
-* Tue Jul 10 2018 Mark Syms <mark.syms@citrix.com> - 1.3.0-6.xs+1.4.0
+* Tue Jul 10 2018 Mark Syms <mark.syms@citrix.com>  Edwin Török <edvin.torok@citrix.com> - 1.3.1-7.xs+2.0.0
 - CA-290600: Xapi SBD watcher segfault
-
-* Thu Jul  5 2018 Mark Syms <mark.syms@citrix.com> - 1.3.0-6.xs+1.3.0
-- CA-292257: fix up possible race condition,
-   code refactoring, error improvements
-
-* Wed Jun 20 2018 Mark Syms <mark.syms@citrix.com> - 1.3.0-6.xs+1.2.0
+- CA-292257: fix up possible race condition, code refactoring, error improvements
 - CA-292257: increase log severity
-
-* Mon Jun  4 2018 Mark Syms <mark.syms@citrix.com> - 1.3.0-6.xs+1.1.0
 - Add Xapi health check monitoring
-
-* Thu Mar 15 2018 Edwin Török <edvin.torok@citrix.com> - 1.3.0-6.xs+1.0.0
 - Use versioned xenserver-corosync Provides
 - Depend on our repatched version of packages
-
-* Fri Feb 16 2018 Mark Syms <mark.syms@citrix.com> - 1.3.0-5.xs-1.0.0
 - only report good health if quorate or not had quorum
 - sbd-cluster: only connect to quorum service if SUPPORT_COROSYNC
 - sbd-cluster: disconnect from crm on failure to connect to quorum
 - CP-26038: Increase logging level to CRIT for quorum loss
+
+* Mon Jan 15 2018 <kwenning@redhat.com> - 1.3.1-7
+- reenable sbd on upgrade so that additional
+  links to make pacemaker properly depend on
+  sbd are created
+
+  Resolves: rhbz#1525981
+
+* Wed Jan 10 2018 <kwenning@redhat.com> - 1.3.1-5
+- add man sections for query- & test-watchdog
+
+  Resolves: rhbz#1462002
+
+* Wed Dec 20 2017 <kwenning@redhat.com> - 1.3.1-3
+- mention timeout caveat with SBD_DELAY_START
+  in configuration template
+- make systemd wait for sbd-start to finish
+  before starting pacemaker or dlm
+
+  Resolves: rhbz#1525981
+
+* Fri Nov 3 2017 <kwenning@redhat.com> - 1.3.1-2
+- rebase to upstream v1.3.1
+
+  Resolves: rhbz#1499864
+            rhbz#1468580
+            rhbz#1462002
 
 * Wed Jun 7 2017 <kwenning@redhat.com> - 1.3.0-3
 - prevent creation of duplicate servants
