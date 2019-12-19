@@ -1,0 +1,31 @@
+diff --git a/src/sbd-cluster.c b/src/sbd-cluster.c
+index 792e254..0fd46b5 100644
+--- a/src/sbd-cluster.c
++++ b/src/sbd-cluster.c
+@@ -197,7 +197,7 @@ static void cmap_consensus_notify_fn(cmap_handle_t cmap_handle,
+                 qd.consensus_timeout = *((uint32_t *) new_val.data);
+                 /* Take 1s (in milliseconds) off the timeout because we only
+                  * check once per second */
+-                if (qd.consensus_timeout > 1000) qd.consensus_timeout -= 1000;
++                if (qd.consensus_timeout > 2000) qd.consensus_timeout -= 1000;
+                 break;
+             case CMAP_TRACK_DELETE:
+                 qd.consensus_timeout = 0; /* This should never happen though */
+@@ -255,7 +255,7 @@ sbd_crm_setup(void)
+         qd.consensus_timeout = consensus;
+         /* Take 1s (in milliseconds) off the timeout because we only
+             * check once per second */
+-        if (qd.consensus_timeout > 1000) qd.consensus_timeout -= 1000;
++        if (qd.consensus_timeout > 2000) qd.consensus_timeout -= 1000;
+     } else {
+         cl_log(LOG_WARNING, "Could not read runtime.config.totem.consensus\n");
+         goto out;
+@@ -430,7 +430,7 @@ notify_timer_cb(gpointer data)
+                     */
+                     if (timeval_subtract(&diff, &ts, &qd.ts) >= 0) {
+                         if (diff.tv_sec * 1000 + diff.tv_nsec / 1000000 > qd.consensus_timeout) {
+-                            set_servant_health(pcmk_health_transient, LOG_CRIT, "Quorum check timed out");
++                                set_servant_health(pcmk_health_transient, LOG_CRIT, "Quorum check timed out, diff %lu, consensus %u", diff.tv_sec, qd.consensus_timeout);
+                         }
+                     }
+                 }

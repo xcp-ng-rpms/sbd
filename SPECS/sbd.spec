@@ -20,12 +20,14 @@
 %global github_owner Clusterlabs
 %global buildnum 7
 
+%global xs_tag 2.1.1
+
 Name:           sbd
 Summary:        Storage-based death
 License:        GPLv2+
 Group:          System Environment/Daemons
 Version:        1.3.1
-Release:        7.xs+2.0.0
+Release:        7.xs+%{xs_tag}
 Url:            https://github.com/%{github_owner}/%{name}
 #Source0:        https://github.com/%{github_owner}/%{name}/archive/%{commit}/%{name}-%{commit}.tar.gz
 
@@ -43,10 +45,11 @@ Patch8: CA-290057__fix_compilation_warnings
 Patch9: CA-292257__log_xapi_checker_failures_at_LOG_ERR
 Patch10: CA-292257__sbd_xapi_servant_outdated
 Patch11: CA-290600__Xapi_SBD_watcher_segfault
+Patch12: CA-318655__consensus_must_be_greater_than_poll_interval
 
-Provides: gitsha(https://code.citrite.net/rest/archive/latest/projects/XSU/repos/sbd.centos/archive?at=imports%2Fc7%2Fsbd-1.3.1-7.el7&format=tar.gz#/sbd-1.3.1.centos.tar.gz) = e38fd2356724512cb5a98add1fb973d86615de6e
+Provides: gitsha(https://code.citrite.net/rest/archive/latest/projects/XSU/repos/sbd.centos/archive?at=imports%2Fc7%2Fsbd-1.3.1-7.el7&format=tar.gz#/sbd-1.3.1.centos.tar.gz) = 50e840831165e030e5ab6aa423a19251d5410c73
 Provides: gitsha(https://code.citrite.net/rest/archive/latest/projects/XSU/repos/sbd/archive?at=a74b4d25a3eb93fe1abbe6e3ebfd2b16cf48873f&format=tar.gz&prefix=sbd-a74b4d25a3eb93fe1abbe6e3ebfd2b16cf48873f#/sbd-a74b4d25a3eb93fe1abbe6e3ebfd2b16cf48873f.tar.gz) = a74b4d25a3eb93fe1abbe6e3ebfd2b16cf48873f
-Provides: gitsha(https://code.citrite.net/rest/archive/latest/projects/XS/repos/sbd.pg/archive?at=2.0.0&format=tar#/sbd-2.0.0.pg.tar) = 6a6f4c579419a7c28c8b6e5bf5f7ad1f5960f3a5
+Provides: gitsha(https://code.citrite.net/rest/archive/latest/projects/XS/repos/sbd.pg/archive?at=2.1.1&format=tar#/sbd-2.1.1.pg.tar) = 3234b29d3f24ed89e7a260640d518c69d3915bca
 
 BuildRoot:      %{_tmppath}/%{name}-%{version}-build
 BuildRequires:  autoconf
@@ -149,6 +152,12 @@ fi
 %doc COPYING
 
 %changelog
+* Wed Jun  5 2019 Mark Syms <mark.syms@citrix.com> - 1.3.1-7.xs+2.1.1
+- Don't reduce internal consensus timeout below poll interval
+
+* Mon May 13 2019 Mark Syms <mark.syms@citrix.com> - 1.3.1-7.xs+2.1.0
+- Implement asynchronous quorum queries
+
 * Tue Jul 10 2018 Mark Syms <mark.syms@citrix.com>  Edwin Török <edvin.torok@citrix.com> - 1.3.1-7.xs+2.0.0
 - CA-290600: Xapi SBD watcher segfault
 - CA-292257: fix up possible race condition, code refactoring, error improvements

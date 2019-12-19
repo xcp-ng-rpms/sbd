@@ -1,21 +1,60 @@
 From 2b790cfaca376a845f513a6cb94432b1679a4c2e Mon Sep 17 00:00:00 2001
-From: Jonathan Davies <jonathan.davies@citrix.com>
-Date: Fri, 15 Sep 2017 16:03:38 +0000
-Subject: [PATCH] sbd-cluster: only report good health if quorate or not had
- quorum
+From: Tim Smith <tim.smith@citrix.com>
+Date: Fri, 29 Mar 2019 13:12:25 +0000
+Subject: [PATCH] sbd-cluster: asynchronous quorum check
 
-Signed-off-by: Jonathan Davies <jonathan.davies@citrix.com>
-Signed-off-by: Liang Dai <liang.dai1@citrix.com>
----
- configure.ac      |  1 +
- src/sbd-cluster.c | 51 ++++++++++++++++++++++++++++++++++++++++++++++-
- 2 files changed, 51 insertions(+), 1 deletion(-)
+Folds in some original patches by:
+Jonathan Davies <jonathan.davies@citrix.com>
+    sbd-cluster: only report good health if quorate or not had quorum
 
+The original code was written when corosync would time out a call
+after 1s. It now blocks until it gets a response which can take
+long enough in some cases that the watchdog fires.
+
+To fix this make the quorum check asynchronous and ensure only one
+is ongoing at any given time. In the timer, notify the last known
+state set by the callback which occurs when the quorum check completes.
+If the last known quorum state gets older than the consensus
+timeout (approximately), begin reporting pcmk_health_transient until
+either we get a report or sbd gives up and fences.
+ 
+Signed-off-by: Tim Smith <tim.smith@citrix.com>
 diff --git a/configure.ac b/configure.ac
-index 1eb8758..aa014ad 100644
+index 1eb8758..1bc8724 100644
 --- a/configure.ac
 +++ b/configure.ac
-@@ -61,6 +61,7 @@ AC_CHECK_LIB(aio, io_setup, , missing="yes")
+@@ -49,7 +49,29 @@ elif test $HAVE_pacemaker = 1; then
+     if test $HAVE_cmap = 0; then
+         AC_MSG_NOTICE(No package 'cmap' found)
+     else
+-	CPPFLAGS="$CPPFLAGS $cmap_CFLAGS"
++        CPPFLAGS="$CPPFLAGS $cmap_CFLAGS"
++    fi
++fi
++
++if test $HAVE_pacemaker = 1; then
++	AC_MSG_CHECKING(whether pacemaker supports corosync)
++    HAVE_pacemaker_corosync=0
++    AC_RUN_IFELSE([
++        AC_LANG_PROGRAM([
++            #include <pacemaker/crm_config.h>
++        ],[
++            #ifndef SUPPORT_COROSYNC
++            exit(1);
++            #endif
++            #if SUPPORT_COROSYNC == 0
++            exit(1);
++            #endif
++        ]
++    )],[HAVE_pacemaker_corosync=1])
++    if test $HAVE_pacemaker_corosync = 1; then
++        AC_MSG_RESULT([yes])
++    else
++        AC_MSG_RESULT([no])
+     fi
+ fi
+ 
+@@ -61,11 +83,17 @@ AC_CHECK_LIB(aio, io_setup, , missing="yes")
  AC_CHECK_LIB(qb, qb_ipcs_connection_auth_set, , missing="yes")
  AC_CHECK_LIB(cib, cib_new, , missing="yes")
  AC_CHECK_LIB(crmcommon, set_crm_log_level, , missing="yes")
@@ -23,63 +62,342 @@ index 1eb8758..aa014ad 100644
  AC_CHECK_LIB(pe_status, pe_find_node, , missing="yes")
  AC_CHECK_LIB(pe_rules, test_rule, , missing="yes")
  AC_CHECK_LIB(crmcluster, crm_peer_init, , missing="yes")
+ AC_CHECK_LIB(uuid, uuid_unparse, , missing="yes")
+ AC_CHECK_LIB(cmap, cmap_initialize, , HAVE_cmap=0)
++if test $HAVE_pacemaker_corosync = 1; then
++    AC_CHECK_LIB(gio-2.0, g_task_new, , HAVE_gio2=0)
++    AC_CHECK_LIB(glib-2.0, g_basename, , HAVE_glib2=0)
++    AC_CHECK_LIB(gobject-2.0, g_malloc, , HAVE_gobject2=0)
++fi
+ 
+ dnl pacemaker >= 1.1.8
+ AC_CHECK_HEADERS(pacemaker/crm/cluster.h)
 diff --git a/src/sbd-cluster.c b/src/sbd-cluster.c
-index de99d0c..8834e9b 100644
+index de99d0c..792e254 100644
 --- a/src/sbd-cluster.c
 +++ b/src/sbd-cluster.c
-@@ -37,6 +37,10 @@
+@@ -37,6 +37,13 @@
  #include <glib-unix.h>
  #endif
  
 +#if SUPPORT_COROSYNC
 +#include <corosync/quorum.h>
++#include <corosync/cmap.h>
++#include <gio/gio.h>
++#include <time.h>
 +#endif
 +
  #include "sbd.h"
  
  //undef SUPPORT_PLUGIN
-@@ -227,9 +231,18 @@ out:
- #endif
- #endif
+@@ -69,21 +76,28 @@ sbd_plugin_membership_dispatch(cpg_handle_t handle,
+     notify_parent();
+     return;
+ }
+-#endif
++#endif /* SUPPORT_PLUGIN */
  
-+#if SUPPORT_COROSYNC
-+static quorum_handle_t q_handle;
-+static uint32_t q_type;
-+#endif
+ #if SUPPORT_COROSYNC
+ 
+ static bool two_node = false;
+ static bool ever_seen_both = false;
+ static int cpg_membership_entries = -1;
+-
+-#if CHECK_TWO_NODE
+-#include <corosync/cmap.h>
+-
+ static cmap_handle_t cmap_handle = 0;
+-static cmap_track_handle_t track_handle = 0;
+ static GSource *cmap_source = NULL;
+-#endif
 +
- static gboolean
- notify_timer_cb(gpointer data)
++static cmap_track_handle_t twonode_track_handle = 0;
++static cmap_track_handle_t consensus_track_handle = 0;
++
++struct qdata {
++    quorum_handle_t q_handle;
++    uint32_t        q_type;
++    int             running;
++    int             consensus_timeout;
++    bool            ever_had_quorum;
++    struct timespec ts;
++};
++static struct qdata qd;
+ 
+ void
+ sbd_cpg_membership_health_update()
+@@ -133,6 +147,13 @@ sbd_cpg_membership_dispatch(cpg_handle_t handle,
+     notify_parent();
+ }
+ 
++static gboolean
++cmap_dispatch_callback (gpointer user_data)
++{
++    cmap_dispatch(cmap_handle, CS_DISPATCH_ALL);
++    return TRUE;
++}
++
+ #if CHECK_TWO_NODE
+ static void sbd_cmap_notify_fn(
+     cmap_handle_t cmap_handle,
+@@ -159,32 +180,61 @@ static void sbd_cmap_notify_fn(
+         notify_parent();
+     }
+ }
+-
+-static gboolean
+-cmap_dispatch_callback (gpointer user_data)
++#endif /* CHECK_TWO_NODE */
++
++static void cmap_consensus_notify_fn(cmap_handle_t cmap_handle,
++                                     cmap_track_handle_t cmap_track_handle,
++                                     int32_t event,
++                                     const char *key_name,
++                                     struct cmap_notify_value new_val,
++                                     struct cmap_notify_value old_val,
++                                     void *user_data)
  {
+-    cmap_dispatch(cmap_handle, CS_DISPATCH_ALL);
+-    return TRUE;
++    if (new_val.type == CMAP_VALUETYPE_UINT32) {
++        switch (event) {
++            case CMAP_TRACK_ADD:
++            case CMAP_TRACK_MODIFY:
++                qd.consensus_timeout = *((uint32_t *) new_val.data);
++                /* Take 1s (in milliseconds) off the timeout because we only
++                 * check once per second */
++                if (qd.consensus_timeout > 1000) qd.consensus_timeout -= 1000;
++                break;
++            case CMAP_TRACK_DELETE:
++                qd.consensus_timeout = 0; /* This should never happen though */
++                break;
++            default:
++                return;
++        }
++    }
+ }
+ 
+ static gboolean
+-sbd_get_two_node(void)
++sbd_crm_setup(void)
+ {
+     uint8_t two_node_u8 = 0;
++    uint32_t consensus = 0;
+     int cmap_fd;
+ 
+-    if (!track_handle) {
++    if (!cmap_handle) {
+         if (cmap_initialize(&cmap_handle) != CS_OK) {
+             cl_log(LOG_WARNING, "Cannot initialize CMAP service\n");
+             goto out;
+         }
+ 
++        if (cmap_track_add(cmap_handle, "runtime.config.totem.consensus",
++                            CMAP_TRACK_DELETE|CMAP_TRACK_MODIFY|CMAP_TRACK_ADD,
++                            cmap_consensus_notify_fn, NULL, &consensus_track_handle) != CS_OK) {
++            cl_log(LOG_WARNING, "Failed adding CMAP tracker for runtime.config.totem.consensus\n");
++            goto out;
++        }
++#if CHECK_TWO_NODE
+         if (cmap_track_add(cmap_handle, "quorum.two_node",
+                             CMAP_TRACK_DELETE|CMAP_TRACK_MODIFY|CMAP_TRACK_ADD,
+-                            sbd_cmap_notify_fn, NULL, &track_handle) != CS_OK) {
++                            sbd_cmap_notify_fn, NULL, &twonode_track_handle) != CS_OK) {
+             cl_log(LOG_WARNING, "Failed adding CMAP tracker for 2Node-mode\n");
+             goto out;
+         }
++#endif /* CHECK_TWO_NODE */
+ 
+         /* add the tracker to mainloop */
+         if (cmap_fd_get(cmap_handle, &cmap_fd) != CS_OK) {
+@@ -200,11 +250,21 @@ sbd_get_two_node(void)
+         g_source_attach(cmap_source, NULL);
+     }
+ 
++    if (cmap_get_uint32(cmap_handle, "runtime.config.totem.consensus", &consensus) == CS_OK) {
++        cl_log(LOG_NOTICE, "Corosync totem consensus is %d ms", consensus);
++        qd.consensus_timeout = consensus;
++        /* Take 1s (in milliseconds) off the timeout because we only
++            * check once per second */
++        if (qd.consensus_timeout > 1000) qd.consensus_timeout -= 1000;
++    } else {
++        cl_log(LOG_WARNING, "Could not read runtime.config.totem.consensus\n");
++        goto out;
++    }
+     if (cmap_get_uint8(cmap_handle, "quorum.two_node", &two_node_u8) == CS_OK) {
+         cl_log(LOG_NOTICE, "Corosync is%s in 2Node-mode", two_node_u8?"":" not");
+         two_node = two_node_u8;
+     } else {
+-        cl_log(LOG_NOTICE, "quorum.two_node present in cmap\n");
++        cl_log(LOG_NOTICE, "quorum.two_node not present in cmap\n");
+     }
+     return TRUE;
+ 
+@@ -213,9 +273,13 @@ out:
+         g_source_destroy(cmap_source);
+         cmap_source = NULL;
+     }
+-    if (track_handle) {
+-        cmap_track_delete(cmap_handle, track_handle);
+-        track_handle = 0;
++    if (twonode_track_handle) {
++        cmap_track_delete(cmap_handle, twonode_track_handle);
++        twonode_track_handle = 0;
++    }
++    if (consensus_track_handle) {
++        cmap_track_delete(cmap_handle, consensus_track_handle);
++        consensus_track_handle = 0;
+     }
+     if (cmap_handle) {
+         cmap_finalize(cmap_handle);
+@@ -224,8 +288,115 @@ out:
+ 
+     return FALSE;
+ }
+-#endif
+-#endif
++
++/*
++ * quorum_getquorate_thread() is called in a separate thread.
++ * It could access the quorum data structure directly but
++ * since we can pass it, it is done this way. Currently we do
++ * not have any locking on this struct because none is needed;
++ * this thread only reads values which are never modified while
++ * it is running.
++ */
++static void
++quorum_getquorate_thread(GTask         *task,
++                         gpointer       source_object,
++                         gpointer       task_data,
++                         GCancellable  *cancellable)
++{
 +    int is_quorate;
 +    int err;
-+    static int ever_had_quorum = FALSE;
++    struct qdata *qd = task_data;
 +
-     cl_log(LOG_DEBUG, "Refreshing %sstate", remote_node?"remote ":"");
++    err = quorum_getquorate(qd->q_handle, &is_quorate);
++    if (err != CS_OK) g_task_return_int(task, -1); // Indeterminate result
++    else if (is_quorate) g_task_return_int(task, 1); // Quorate
++    else g_task_return_int(task, 0); // Not quorate
++}
++
++static void
++quorum_getquorate_cb(GObject *source,
++                     GAsyncResult *result,
++                     gpointer user_data)
++{
++    int is_quorate = -1; // Default to indeterminate result
++    GError *error = NULL;
++
++    /* 
++     * The callback is called in the main thread same as
++     * do_quorum_getquorate() so we do not need a lock to modify
++     * the structure. This allows another attempt to start now
++     * that the last one finished
++     */
++    qd.running = 0;
++    is_quorate = g_task_propagate_int(G_TASK(result), &error);
++    /* 
++     * Do not care about the error if we get one; the indeterminate (-1) result
++     * is enough. But we do need to free it or we will leak memory.
++     */
++    if (error) g_error_free(error);
++    cl_log(LOG_DEBUG, "is_quorate=%d", is_quorate);
++    clock_gettime(CLOCK_MONOTONIC, &qd.ts);
++    switch (is_quorate) {
++        case 0:
++            if (qd.ever_had_quorum) {
++                set_servant_health(pcmk_health_noquorum, LOG_CRIT, "Quorum lost");
++            } else {
++                set_servant_health(pcmk_health_online, LOG_INFO, "We do not have quorum yet");
++            }
++            break;
++        case 1:
++            set_servant_health(pcmk_health_online, LOG_INFO, "Node state: online");
++            qd.ever_had_quorum = TRUE;
++            break;
++        default:
++            set_servant_health(pcmk_health_transient, LOG_INFO, "Unable to determine quorum status");
++    }
++}
++
++static void
++do_quorum_getquorate(void)
++{
++    GTask *task;
++
++    /* Do not start another attempt if one is already running */
++    if (qd.running) return;
++    task = g_task_new (NULL, NULL, quorum_getquorate_cb, NULL);
++    g_task_set_task_data(task, &qd, NULL);
++    /* Prevent another attempt starting before this one finishes */
++    qd.running = 1;
++    g_task_run_in_thread(task, quorum_getquorate_thread);
++    g_object_unref (task);
++}
++
++/* Subtract the ‘struct timeval’ values X and Y,
++   storing the result in RESULT.
++   Return 1 if the difference is negative, otherwise 0. */
++
++static int
++timeval_subtract(struct timespec *result, struct timespec *x, struct timespec *y)
++{
++    /* Perform the carry for the later subtraction by updating y. */
++    if (x->tv_nsec < y->tv_nsec) {
++        int nsec = (y->tv_nsec - x->tv_nsec) / 1000000 + 1;
++        y->tv_nsec -= 1000000000 * nsec;
++        y->tv_sec += nsec;
++    }
++    if (x->tv_nsec - y->tv_nsec > 1000000000) {
++        int nsec = (x->tv_nsec - y->tv_nsec) / 1000000000;
++        y->tv_nsec += 1000000000 * nsec;
++        y->tv_sec -= nsec;
++    }
++
++    /* Compute the time remaining to wait.
++        tv_nsec is certainly positive. */
++    result->tv_sec = x->tv_sec - y->tv_sec;
++    result->tv_nsec = x->tv_nsec - y->tv_nsec;
++
++    /* Return 1 if result is negative. */
++    return x->tv_sec < y->tv_sec;
++}
++
++#endif /* SUPPORT_COROSYNC */
  
-     if(remote_node) {
-@@ -244,7 +257,20 @@ notify_timer_cb(gpointer data)
+ static gboolean
+ notify_timer_cb(gpointer data)
+@@ -244,7 +415,27 @@ notify_timer_cb(gpointer data)
  
          case pcmk_cluster_corosync:
          case pcmk_cluster_cman:
 -            /* TODO - Make a CPG call and only call notify_parent() when we get a reply */
 +#if SUPPORT_COROSYNC
-+            /* Report healthy if we're quorate or we've never seen quorum */
-+            err = quorum_getquorate(q_handle, &is_quorate);
-+            if (err != CS_OK) {
-+                set_servant_health(pcmk_health_transient, LOG_INFO, "Unable to dispatch quorum status: %d", err);
-+            } else if (is_quorate) {
-+                set_servant_health(pcmk_health_online, LOG_INFO, "Node state: online");
-+                ever_had_quorum = TRUE;
-+            } else if (ever_had_quorum) {
-+                set_servant_health(pcmk_health_noquorum, LOG_WARNING, "Quorum lost");
-+            } else {
-+                set_servant_health(pcmk_health_online, LOG_INFO, "We do not have quorum yet");
++            /* Initiate asynchronous quorum check */
++            do_quorum_getquorate();
++            if (qd.ever_had_quorum) {
++                struct timespec ts;
++                struct timespec diff;
++                
++                if (clock_gettime(CLOCK_MONOTONIC, &ts) == 0) {
++                    /*
++                    * If the last successful quorum query state (in seconds) is older than
++                    * the consensus timeout (in milliseconds), declare our state to be
++                    * indeterminate.
++                    */
++                    if (timeval_subtract(&diff, &ts, &qd.ts) >= 0) {
++                        if (diff.tv_sec * 1000 + diff.tv_nsec / 1000000 > qd.consensus_timeout) {
++                            set_servant_health(pcmk_health_transient, LOG_CRIT, "Quorum check timed out");
++                        }
++                    }
++                }
 +            }
-+#endif
++#endif /* SUPPORT_COROSYNC */
              notify_parent();
              break;
  
-@@ -259,6 +285,7 @@ static void
+@@ -259,6 +450,7 @@ static void
  sbd_membership_connect(void)
  {
      bool connected = false;
@@ -87,31 +405,44 @@ index de99d0c..8834e9b 100644
  
      cl_log(LOG_NOTICE, "Attempting cluster connection");
  
-@@ -270,6 +297,7 @@ sbd_membership_connect(void)
+@@ -270,6 +462,8 @@ sbd_membership_connect(void)
  
  #if SUPPORT_COROSYNC
      cluster.cpg.cpg_confchg_fn = sbd_cpg_membership_dispatch;
-+    q_handle = 0;
++    qd.q_handle = 0;
++    qd.ever_had_quorum = FALSE;
  #endif
  
      while(connected == false) {
-@@ -294,6 +322,15 @@ sbd_membership_connect(void)
+@@ -285,15 +479,24 @@ sbd_membership_connect(void)
+         } else {
+             cl_log(LOG_INFO, "Attempting connection to %s", name_for_cluster_type(stack));
+ 
+-#if SUPPORT_COROSYNC && CHECK_TWO_NODE
+-            if (sbd_get_two_node()) {
++#if SUPPORT_COROSYNC
++            if (sbd_crm_setup()) {
+ #endif
+ 
+                 if(crm_cluster_connect(&cluster)) {
+                     connected = true;
                  }
  
- #if SUPPORT_COROSYNC && CHECK_TWO_NODE
+-#if SUPPORT_COROSYNC && CHECK_TWO_NODE
++#if SUPPORT_COROSYNC
 +                /* Connect to quorum service so we can use q_handle */
 +                cl_log(LOG_INFO, "Attempting quorum connection");
-+                err = quorum_initialize(&q_handle, NULL, &q_type);
++                err = quorum_initialize(&qd.q_handle, NULL, &qd.q_type);
 +                if (err != CS_OK) {
 +                    cl_log(LOG_ERR, "Cannot initialize QUORUM service: %d\n", err);
-+                    q_handle = 0;
++                    qd.q_handle = 0;
 +                    crm_cluster_disconnect(&cluster);
 +                    connected = false;
 +                }
              }
  #endif
          }
-@@ -313,11 +350,23 @@ sbd_membership_connect(void)
+@@ -313,11 +516,31 @@ sbd_membership_connect(void)
  static void
  sbd_membership_destroy(gpointer user_data)
  {
@@ -123,18 +454,23 @@ index de99d0c..8834e9b 100644
      notify_parent();
  
 +#if SUPPORT_COROSYNC
++    if (qd.running) {
++        /* Don't have a safe way to wait for the thread to complete
++         * here. As a first pass, complain and return if it is, and
++         * see if we ever get this */
++        cl_log(LOG_CRIT, "sbd_membership_destroy() with running quorum query thread");
++        return;
++    }
 +    /* Best effort attempt to disconnect from quorum service */
 +    cl_log(LOG_INFO, "Attempting quorum disconnection");
-+    err = quorum_finalize(q_handle);
++    err = quorum_finalize(qd.q_handle);
 +    if (err != CS_OK) {
++        /* The subsequent sbd_membership_connect() will probably
++         * fail after this */
 +        cl_log(LOG_ERR, "Cannot finalize QUORUM service: %d\n", err);
-+        q_handle = 0;
 +    }
 +#endif
 +
      /* Attempt to reconnect, the watchdog will take the node down if the problem isn't transient */
      sbd_membership_connect();
  }
--- 
-2.17.1
-
