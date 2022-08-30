@@ -1,0 +1,28 @@
+CA-359862: check the results of memory allocation
+
+From: Mark Syms <mark.syms@citrix.com>
+
+Check that we got a valid memory allocation before dereferencing.
+
+Signed-off-by: Mark Syms <mark.syms@citrix.com>
+
+diff --git a/src/sbd-inquisitor.c b/src/sbd-inquisitor.c
+index ab762bb..97eae39 100644
+--- a/src/sbd-inquisitor.c
++++ b/src/sbd-inquisitor.c
+@@ -166,9 +166,12 @@ void servant_start(struct servants_list_item *s)
+         } else if (sbd_is_xapi(s)) {
+ 		DBGLOG(LOG_INFO, "Starting Xapi servant");
+ 		xapi_params = malloc(sizeof(struct xapi_servant_params));
+-		xapi_params->health_check_timeout = xapi_health_timeout;
+-		s->pid = assign_servant(s->devname, servant_xapi, start_mode, xapi_params);
+-
++		if (xapi_params) {
++			xapi_params->health_check_timeout = xapi_health_timeout;
++			s->pid = assign_servant(s->devname, servant_xapi, start_mode, xapi_params);
++		} else {
++			cl_log(LOG_ERR, "Unable to create parameters for xapi inquisitor");
++		}
+         } else {
+             cl_log(LOG_ERR, "Unrecognized servant: %s", s->devname);
+         }        

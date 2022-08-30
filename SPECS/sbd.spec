@@ -1,3 +1,8 @@
+%global package_speccommit 513c48e1e15a837f237136daecd5fbb050da1b07
+%global usver 1.3.1
+%global xsver 7+2.1.3
+%global xsrel %{xsver}%{?xscount}%{?xshash}
+%global package_srccommit a74b4d25a3eb93fe1abbe6e3ebfd2b16cf48873f
 #
 # spec file for package sbd
 #
@@ -20,22 +25,18 @@
 %global github_owner Clusterlabs
 %global buildnum 7
 
-%global xs_tag 2.1.1
-
 Name:           sbd
 Summary:        Storage-based death
 License:        GPLv2+
 Group:          System Environment/Daemons
-Version:        1.3.1
-Release:        7.xs+%{xs_tag}
+Version: 1.3.1
+Release: %{?xsrel}%{?dist}
 Url:            https://github.com/%{github_owner}/%{name}
-#Source0:        https://github.com/%{github_owner}/%{name}/archive/%{commit}/%{name}-%{commit}.tar.gz
-
-Source0: https://code.citrite.net/rest/archive/latest/projects/XSU/repos/sbd/archive?at=a74b4d25a3eb93fe1abbe6e3ebfd2b16cf48873f&format=tar.gz&prefix=sbd-a74b4d25a3eb93fe1abbe6e3ebfd2b16cf48873f#/sbd-a74b4d25a3eb93fe1abbe6e3ebfd2b16cf48873f.tar.gz
-Patch0: SOURCES/sbd/0001-make-pacemaker-dlm-wait-for-sbd-start.patch
-Patch1: SOURCES/sbd/0002-mention-timeout-caveat-with-SBD_DELAY_START.patch
-Patch2: SOURCES/sbd/0003-Doc-sbd.8.pod-add-query-test-watchdog.patch
-
+#Source0:        https://github.com/%%{github_owner}/%%{name}/archive/%%{commit}/%%{name}-%%{commit}.tar.gz
+Source0: sbd-1.3.1.tar.gz
+Patch0: 0001-make-pacemaker-dlm-wait-for-sbd-start.patch
+Patch1: 0002-mention-timeout-caveat-with-SBD_DELAY_START.patch
+Patch2: 0003-Doc-sbd.8.pod-add-query-test-watchdog.patch
 Patch3: 0001-Tweak-sbd-inquisitor.c-to-retain-the-same-behaviour-.patch
 Patch4: 0001-sbd-cluster-only-report-good-health-if-quorate-or-no.patch
 Patch5: 0002-increase_logging_level_to_CRIT_for_quorum_loss.patch
@@ -46,11 +47,7 @@ Patch9: CA-292257__log_xapi_checker_failures_at_LOG_ERR
 Patch10: CA-292257__sbd_xapi_servant_outdated
 Patch11: CA-290600__Xapi_SBD_watcher_segfault
 Patch12: CA-318655__consensus_must_be_greater_than_poll_interval
-
-Provides: gitsha(https://code.citrite.net/rest/archive/latest/projects/XSU/repos/sbd.centos/archive?at=imports%2Fc7%2Fsbd-1.3.1-7.el7&format=tar.gz#/sbd-1.3.1.centos.tar.gz) = 50e840831165e030e5ab6aa423a19251d5410c73
-Provides: gitsha(https://code.citrite.net/rest/archive/latest/projects/XSU/repos/sbd/archive?at=a74b4d25a3eb93fe1abbe6e3ebfd2b16cf48873f&format=tar.gz&prefix=sbd-a74b4d25a3eb93fe1abbe6e3ebfd2b16cf48873f#/sbd-a74b4d25a3eb93fe1abbe6e3ebfd2b16cf48873f.tar.gz) = a74b4d25a3eb93fe1abbe6e3ebfd2b16cf48873f
-Provides: gitsha(https://code.citrite.net/rest/archive/latest/projects/XS/repos/sbd.pg/archive?at=2.1.1&format=tar#/sbd-2.1.1.pg.tar) = 3234b29d3f24ed89e7a260640d518c69d3915bca
-
+Patch13: CA-359862__check_memory_allocated
 BuildRoot:      %{_tmppath}/%{name}-%{version}-build
 BuildRequires:  autoconf
 BuildRequires:  automake
@@ -66,6 +63,7 @@ BuildRequires:  libxml2-devel
 BuildRequires:  pkgconfig
 BuildRequires:  python-devel
 BuildRequires:  git
+%{?_cov_buildrequires}
 
 %if 0%{?rhel} > 0
 ExclusiveArch: i686 x86_64 s390x ppc64le
@@ -84,7 +82,8 @@ This package contains the storage-based death functionality.
 ###########################################################
 
 %prep
-%autosetup -n %{name}-%{commit} -p1 -S git
+%autosetup -n %{name}-%{version} -p1 -S git
+%{?_cov_prepare}
 
 ###########################################################
 
@@ -92,7 +91,7 @@ This package contains the storage-based death functionality.
 autoreconf -i
 export CFLAGS="$RPM_OPT_FLAGS -Wall -Werror"
 %configure
-make %{?_smp_mflags}
+%{?_cov_wrap} make %{?_smp_mflags}
 
 ###########################################################
 
@@ -109,6 +108,8 @@ install -D -m 0644 src/sbd_remote.service $RPM_BUILD_ROOT/%{_unitdir}/sbd_remote
 mkdir -p ${RPM_BUILD_ROOT}%{_sysconfdir}/sysconfig
 install -m 644 src/sbd.sysconfig ${RPM_BUILD_ROOT}%{_sysconfdir}/sysconfig/sbd
 
+%{?_cov_install}
+
 ###########################################################
 
 %clean
@@ -119,14 +120,14 @@ rm -rf %{buildroot}
 %systemd_post sbd.service
 %systemd_post sbd_remote.service
 if [ $1 -ne 1 ] ; then
-	if systemctl --quiet is-enabled sbd.service 2>/dev/null
-	then
-		systemctl --quiet reenable sbd.service 2>/dev/null || :
-	fi
-	if systemctl --quiet is-enabled sbd_remote.service 2>/dev/null
-	then
-		systemctl --quiet reenable sbd_remote.service 2>/dev/null || :
-	fi
+    if systemctl --quiet is-enabled sbd.service 2>/dev/null
+    then
+        systemctl --quiet reenable sbd.service 2>/dev/null || :
+    fi
+    if systemctl --quiet is-enabled sbd_remote.service 2>/dev/null
+    then
+        systemctl --quiet reenable sbd_remote.service 2>/dev/null || :
+    fi
 fi
 
 %preun
@@ -143,7 +144,7 @@ fi
 %defattr(-,root,root)
 %config(noreplace) %{_sysconfdir}/sysconfig/sbd
 %{_sbindir}/sbd
-#%{_datadir}/sbd
+#%%{_datadir}/sbd
 %doc %{_mandir}/man8/sbd*
 %if %{defined _unitdir}
 %{_unitdir}/sbd.service
@@ -151,7 +152,19 @@ fi
 %endif
 %doc COPYING
 
+%{?_cov_results_package}
+
 %changelog
+* Fri Oct 15 2021 Mark Syms <mark.syms@citrix.com> - 1.3.1-7+2.1.3
+- CA-359862: check the results of memory allocation
+
+* Tue Oct 12 2021 Mark Syms <mark.syms@citrix.com> - 1.3.1-7+2.1.2
+- CP-34144: add coverity macros
+- CP-34144: define static analysis
+
+* Wed Dec 11 2019 Tim Smith <tim.smith@citrix.com> - 1.3.1-7+2.1.1
+- Dropped xs from release
+
 * Wed Jun  5 2019 Mark Syms <mark.syms@citrix.com> - 1.3.1-7.xs+2.1.1
 - Don't reduce internal consensus timeout below poll interval
 
